@@ -593,7 +593,7 @@
       gBtn.innerHTML = '<i class="ti ti-sparkles" style="font-style:normal;"></i> what should I do?';
 
       var gResult = document.createElement('div');
-      gResult.style.cssText = 'margin-top:8px;font-size:13.5px;line-height:1.6;color:#333;display:none;';
+      gResult.style.cssText = 'margin-top:8px;font-size:13.5px;line-height:1.6;color:'+(dark?'#e6e4f5':'#333')+';display:none;';
 
       gBtn.onclick = function(){
         gBtn.disabled = true;
@@ -601,7 +601,7 @@
         fetch(API_BASE+'/suggest', {
           method:'POST',
           headers:{'Content-Type':'application/json'},
-          body:JSON.stringify({node_id: label, session_id: SESSION_ID})
+          body:JSON.stringify({node_id: label, aliases: aliasesFor(label), session_id: SESSION_ID})
         })
           .then(function(r){ return r.json(); })
           .then(function(res){
@@ -968,6 +968,8 @@
   function refreshOpenDesc(key){if(openNotesLabel===key)openNotes(key,openNotesColor);}
   // ---- reconciliation: aliases, rename, merge (backend tells us the action; we apply it) ----
   function resolveKey(name){var k=(''+(name||'')).toLowerCase().trim(),seen={};while(aliases[k]&&!seen[k]){seen[k]=1;k=aliases[k];}return k;}
+  // every prior name a bubble has been known by (handles multi-hop rename chains) — sent to /suggest so the backend can match against the original topic name stored at commit time
+  function aliasesFor(canon){return Object.keys(aliases).filter(function(a){return resolveKey(a)===canon&&a!==canon;});}
   function moveKey(obj,o,n){if(o===n)return;if(obj[o]!==undefined){if(obj[n]===undefined)obj[n]=obj[o];delete obj[o];}}
   // build the compact map snapshot the backend reconciles against
   function graphSnapshot(){
