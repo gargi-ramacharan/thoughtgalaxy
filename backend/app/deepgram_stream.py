@@ -18,6 +18,8 @@ async def make_live_connection(on_transcript, on_utterance_end):
     })
 
     def handle_transcript(data):
+        if "channel" not in data:
+            return
         alt = data["channel"]["alternatives"][0]
         text = alt.get("transcript", "")
         is_final = data.get("is_final", False)
