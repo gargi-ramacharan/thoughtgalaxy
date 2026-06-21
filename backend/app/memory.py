@@ -1,104 +1,111 @@
 """Milestone 2 — Redis as long-term memory.
 
-Two jobs:
+Switched to RedisVL after the raw redis-py + RediSearch KNN path returned
+zero results despite confirmed correct indexing (num_docs matched,
+zero indexing failures, byte lengths matched exactly). RedisVL is the
+officially recommended high-level client for vector search on Redis and
+handles query-building/serialization internally, so it sidesteps whatever
+was going wrong at that layer.
+
+Two jobs, same as before:
   1. Persist every session so nothing is lost.
-  2. Store node embeddings so we can semantically search past thoughts:
-     "find when I was stressed about exams" pulls the right bubbles even if
-     the words don't match exactly.
-
-This is what lets the Insight Agent say "you've felt this way before, and last
-time X helped." Without memory, suggestions are generic. With it, they feel
-like the app actually knows you.
-
-Uses redis-py with the RediSearch vector index (Redis Stack / Redis Cloud).
+  2. Store node embeddings so we can semantically search past thoughts.
 """
 import json
 import os
 import time
 import numpy as np
 import redis
-from redis.commands.search.field import TextField, VectorField, TagField
-from redis.commands.search.indexDefinition import IndexDefinition, IndexType
-from redis.commands.search.query import Query
+from redisvl.index import SearchIndex
+from redisvl.query import VectorQuery
+from sentence_transformers import SentenceTransformer
 from anthropic import Anthropic
 
-r = redis.from_url(os.environ.get("REDIS_URL", "redis://localhost:6379"))
+REDIS_URL = os.environ.get("REDIS_URL", "redis://localhost:6379")
+r = redis.from_url(REDIS_URL)
 _anthropic = Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
 
-INDEX_NAME = "node_idx"
+INDEX_NAME = "node_idx_redisvl"   # new name — fresh index, no leftover state
 PREFIX = "node:"
-DIM = 1024  # match your embedding model's output dim
+DIM = 384  # all-MiniLM-L6-v2 output size
 
-from openai import OpenAI
-_openai = OpenAI()  # uses OPENAI_API_KEY from your .env
+_local_model = SentenceTransformer("all-MiniLM-L6-v2")
+
 
 def _embed(text: str) -> bytes:
-    """Real semantic embedding via OpenAI."""
-    resp = _openai.embeddings.create(
-        model="text-embedding-3-small",
-        input=text,
-        dimensions=DIM,  # 1024 — matches the Redis index, no other changes needed
-    )
-    vec = np.array(resp.data[0].embedding, dtype=np.float32)
+    """Real semantic embedding via a local model — no API key, no billing.
+    For storage_type="hash", RedisVL needs the vector pre-packed as raw
+    bytes (lists only work for JSON-storage indexes)."""
+    vec = _local_model.encode(text, normalize_embeddings=True).astype(np.float32)
     return vec.tobytes()
 
 
+_schema = {
+    "index": {"name": INDEX_NAME, "prefix": PREFIX, "storage_type": "hash"},
+    "fields": [
+        {"name": "text", "type": "text"},
+        {"name": "detail", "type": "text"},
+        {"name": "type", "type": "tag"},
+        {"name": "session_id", "type": "tag"},
+        {"name": "ts", "type": "numeric"},
+        {"name": "embedding", "type": "vector",
+         "attrs": {"dims": DIM, "distance_metric": "cosine",
+                   "algorithm": "hnsw", "datatype": "float32"}},
+    ],
+}
+
+_index = None
+
+
+def _get_index() -> SearchIndex:
+    global _index
+    if _index is None:
+        _index = SearchIndex.from_dict(_schema, redis_url=REDIS_URL)
+    return _index
+
+
 def ensure_index() -> None:
-    """Create the vector index once. Safe to call on startup."""
-    try:
-        r.ft(INDEX_NAME).info()
-    except redis.ResponseError:
-        r.ft(INDEX_NAME).create_index(
-            fields=[
-                TextField("text"),
-                TextField("detail"),
-                TagField("type"),
-                TextField("session_id"),
-                VectorField(
-                    "embedding",
-                    "HNSW",
-                    {"TYPE": "FLOAT32", "DIM": DIM, "DISTANCE_METRIC": "COSINE"},
-                ),
-            ],
-            definition=IndexDefinition(prefix=[PREFIX], index_type=IndexType.HASH),
-        )
+    """Create the vector index once. Safe to call on startup / every call."""
+    _get_index().create(overwrite=False)
 
 
 def save_session(session) -> None:
     """Store the full session blob + index each node for search."""
     r.set(f"session:{session.id}", session.model_dump_json())
+    records = []
     for node in session.nodes:
-        r.hset(
-            f"{PREFIX}{node.id}",
-            mapping={
-                "text": node.text,
-                "detail": node.detail,
-                "type": node.type.value,
-                "session_id": session.id,
-                "ts": int(time.time()),
-                "embedding": _embed(f"{node.text}. {node.detail}"),
-            },
-        )
+        records.append({
+            "id": node.id,
+            "text": node.text,
+            "detail": node.detail,
+            "type": node.type.value,
+            "session_id": session.id,
+            "ts": int(time.time()),
+            "embedding": _embed(f"{node.text}. {node.detail}"),
+        })
+    _get_index().load(records, id_field="id")
 
 
 def search_past(query_text: str, k: int = 5, exclude_session: str = "") -> list[dict]:
     """Return the k most semantically similar past nodes."""
-    qvec = _embed(query_text)
-    q = (
-        Query(f"*=>[KNN {k} @embedding $vec AS score]")
-        .sort_by("score")
-        .return_fields("text", "detail", "type", "session_id", "score")
-        .dialect(2)
+    q = VectorQuery(
+        vector=_embed(query_text),
+        vector_field_name="embedding",
+        num_results=k + (5 if exclude_session else 0),  # pad, then filter below
+        return_fields=["text", "detail", "type", "session_id"],
+        return_score=True,
     )
-    res = r.ft(INDEX_NAME).search(q, query_params={"vec": qvec})
+    results = _get_index().query(q)
     out = []
-    for doc in res.docs:
-        if doc.session_id == exclude_session:
+    for res in results:
+        if res.get("session_id") == exclude_session:
             continue
-        out.append(
-            {"text": doc.text, "detail": doc.detail, "type": doc.type,
-             "session_id": doc.session_id, "score": float(doc.score)}
-        )
+        out.append({
+            "text": res["text"], "detail": res["detail"], "type": res["type"],
+            "session_id": res["session_id"], "score": float(res["vector_distance"]),
+        })
+        if len(out) >= k:
+            break
     return out
 
 
