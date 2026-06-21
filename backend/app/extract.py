@@ -69,7 +69,8 @@ def _format_map(graph: dict[str, Any] | None, existing_topics: list[str]) -> str
 
 
 def _system_prompt(existing_topics: list[str], graph: dict[str, Any] | None = None,
-                   request_actions: bool = False) -> str:
+                   request_actions: bool = False,
+                   existing_subtopics: dict | None = None) -> str:
     import datetime
     today = datetime.date.today().strftime("%A, %B %d, %Y")
     current_map = _format_map(graph, existing_topics)
@@ -119,6 +120,26 @@ Rules:
             "- When the CURRENT MAP lists NO existing sections (the user started blank), do NOT force anything — "
             "extract topics naturally per the rules above, creating them as 'new'."
         )
+    if existing_subtopics:
+        lines = []
+        for parent, subs in existing_subtopics.items():
+            if subs:
+                lines.append(f"- {parent}: {', '.join(subs)}")
+        subtopic_block = (
+            "\nSUBTOPIC RECONCILIATION — each container has its own existing sub-bubbles.\n"
+            "Inside each top-level container, these sub-bubbles already exist:\n"
+            + "\n".join(lines) + "\n"
+            "Rules:\n"
+            "- When a thought files into a container, REUSE the closest existing sub-bubble name.\n"
+            '- "CS midterm", "final exam", "quiz" → school\'s "exams" sub-bubble\n'
+            '- "violin", "guitar", "piano" → hobbies\'s "music" sub-bubble\n'
+            '- "running", "gym", "lifting" → health\'s "exercise" sub-bubble\n'
+            "- Only create a NEW sub-bubble inside a container when absolutely no existing one fits.\n"
+            "- NEVER output a sub-bubble name that already exists in that container — use merge reconcile instead.\n"
+        ) if lines else ""
+    else:
+        subtopic_block = ""
+
     return f"""You extract structure from a person's short journal or voice-note text for a mind-map journaling app, AND reconcile it against the map they have built so far. Return ONLY a JSON object and nothing else (no prose, no markdown fences).
 
 VOICE — IMPORTANT: every piece of human-readable text you generate (title, summary, each topic/subtopic 'contribution', concerns, actionItems) must address the writer directly as "you"/"your". NEVER refer to the writer in the third person — do NOT write "the user", "the person", "they", "she", or "he". E.g. write "you're stressed about your CS midterm", not "the user is stressed about their CS midterm".
@@ -148,7 +169,7 @@ RECONCILIATION (compare each topic to the CURRENT MAP above and decide how it fi
 - MERGE: if a topic means essentially the same as an existing hub but you would phrase it differently, set reconcile to {{"action":"merge","target":"<existing hub name>"}} so it folds in instead of creating a near-duplicate.
 - Otherwise set reconcile to {{"action":"none"}} (or omit it).
 - SUBTOPIC DEDUP: do NOT create a subtopic that substantially overlaps an existing sibling subtopic shown in the CURRENT MAP. If a facet is essentially the same as an existing sibling, set that subtopic's reconcile to {{"action":"merge","target":"<existing sibling name>"}}. Prefer a few distinct subtopics over many overlapping ones (e.g. do NOT make 'timing & feasibility', 'timing & access', and 'timing & hesitation' separate siblings — they are one facet about timing).
-{action_rule}
+{subtopic_block}{action_rule}
 - Only include events when genuinely implied. Many plain reflections have NONE — return an empty array then; never invent them.
 - events have a time/date (deadlines, appointments, trips). actionItems are tasks you could do.
 - 'kind' is person for named people, place for locations/trips, else topic.
@@ -295,6 +316,7 @@ def extract_thought(
     existing_topics: list[str] | None = None,
     graph: dict[str, Any] | None = None,
     request_actions: bool = False,
+    existing_subtopics: dict | None = None,
 ) -> dict[str, Any]:
     """Claude (graph-aware reconciliation) → local rules.
 
@@ -309,7 +331,7 @@ def extract_thought(
         existing = [n.get("name", "") for n in (graph.get("nodes") or []) if n.get("name")]
     try:
         data, source, model = chat_json(
-            _system_prompt(existing, graph, request_actions), text, max_tokens=1500
+            _system_prompt(existing, graph, request_actions, existing_subtopics), text, max_tokens=1500
         )
         data["source"] = source
         data["model"] = model

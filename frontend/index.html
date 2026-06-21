@@ -1110,7 +1110,7 @@
   async function fetchExtraction(text){
     var ex=existingTopics(),d=null;
     try{
-      var res=await fetch(API_BASE+'/extract-thought',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({text:text,existing_topics:ex,graph:graphSnapshot(),request_actions:requestActions})});
+      var res=await fetch(API_BASE+'/extract-thought',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({text:text,existing_topics:ex,existing_subtopics:INNER,graph:graphSnapshot(),request_actions:requestActions})});
       if(!res.ok)throw new Error('server returned '+res.status);
       d=await res.json();
     }catch(e){
@@ -1398,7 +1398,7 @@
       // preserve the spoken text for the extraction handler, then tell the
       // backend we're done. the backend owns the close (avoids the dead-socket race).
       lastTranscript=finalText.trim();
-      var sendDone=function(){try{if(ws&&ws.readyState===WebSocket.OPEN)ws.send(JSON.stringify({type:'done',existing_topics:existingTopics(),graph:graphSnapshot(),request_actions:requestActions}));}catch(e){}};
+      var sendDone=function(){try{if(ws&&ws.readyState===WebSocket.OPEN)ws.send(JSON.stringify({type:'done',existing_topics:existingTopics(),existing_subtopics:INNER,graph:graphSnapshot(),request_actions:requestActions}));}catch(e){}};
       if(ws&&ws.readyState===WebSocket.CONNECTING){var prevOpen=ws.onopen;ws.onopen=function(){if(prevOpen)prevOpen.apply(this,arguments);sendDone();};}
       else{sendDone();}
       // reset local state; the backend will close the socket → ws.onclose cleans the UI

@@ -92,6 +92,7 @@ async def ws_transcribe(ws: WebSocket):
     ws_graph: dict | None = None
     ws_request_actions = False
     ws_existing = []
+    ws_subtopics: dict = {}
 
     def on_transcript(text: str, is_final: bool):
         if is_final:
@@ -135,6 +136,8 @@ async def ws_transcribe(ws: WebSocket):
                         ws_request_actions = bool(ctrl["request_actions"])
                     if "existing_topics" in ctrl:
                         ws_existing = ctrl.get("existing_topics", [])
+                    if "existing_subtopics" in ctrl:
+                        ws_subtopics = ctrl.get("existing_subtopics", {})
                 except Exception:
                     done = text == "done"
                 if done:
@@ -149,7 +152,7 @@ async def ws_transcribe(ws: WebSocket):
         full = " ".join(accumulated).strip()
         try:
             if full:
-                result = extract_thought(full, ws_existing, graph=ws_graph, request_actions=ws_request_actions)
+                result = extract_thought(full, ws_existing, graph=ws_graph, request_actions=ws_request_actions, existing_subtopics=ws_subtopics)
                 await ws.send_json({"type": "extraction", "data": result})
             await ws.close()
         except Exception as e:
@@ -164,7 +167,8 @@ def extract(payload: dict):
     existing = payload.get("existing_topics") or []
     graph = payload.get("graph")
     request_actions = bool(payload.get("request_actions"))
-    return extract_thought(text, existing, graph=graph, request_actions=request_actions)
+    existing_subtopics = payload.get("existing_subtopics") or {}
+    return extract_thought(text, existing, graph=graph, request_actions=request_actions, existing_subtopics=existing_subtopics)
 
 
 @app.post("/summarize-category")
