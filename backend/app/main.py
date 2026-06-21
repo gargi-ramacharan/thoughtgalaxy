@@ -130,7 +130,9 @@ async def ws_transcribe(ws: WebSocket):
         full = " ".join(accumulated).strip()
         try:
             if full:
-                result = extract_thought(full, existing_topics=[])
+                # run the (blocking) Claude call off the event loop so the live
+                # caption / socket aren't frozen while we wait on the API
+                result = await asyncio.to_thread(extract_thought, full, [])
                 await ws.send_json({"type": "extraction", "data": result})
             await ws.close()
         except Exception as e:

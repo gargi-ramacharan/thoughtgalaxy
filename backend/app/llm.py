@@ -37,7 +37,7 @@ def list_extractors() -> list[str]:
 def chat_claude(system: str, user: str, *, max_tokens: int = 1000) -> str:
     from anthropic import Anthropic
 
-    client = Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
+    client = Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"], timeout=20)
     msg = client.messages.create(
         model=claude_model(),
         max_tokens=max_tokens,
