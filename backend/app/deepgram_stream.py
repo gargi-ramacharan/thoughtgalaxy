@@ -5,6 +5,14 @@ to Deepgram's live endpoint and stream interim + final transcripts back out
 so words appear on screen as the person speaks.
 """
 import os
+# macOS python.org builds don't use the system CA store; point SSL at certifi's
+# bundle so the TLS handshake to Deepgram verifies (only if not already set).
+try:
+    import certifi
+    os.environ.setdefault("SSL_CERT_FILE", certifi.where())
+    os.environ.setdefault("REQUESTS_CA_BUNDLE", certifi.where())
+except Exception:
+    pass
 from deepgram import Deepgram
 
 DEEPGRAM_API_KEY = os.environ["DEEPGRAM_API_KEY"]
