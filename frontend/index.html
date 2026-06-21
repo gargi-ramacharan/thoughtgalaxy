@@ -188,7 +188,8 @@
   var W=0,H=0,DPR=Math.min(window.devicePixelRatio||1,2),dark=false,view='galaxy',editMode=false,screen='intro';
   var MINR=16,MAXR=62,FIT_PAD=52;
   var layoutScale=1,layoutOx=0,layoutOy=0,layoutReady=false;
-  function size(){W=wrap.clientWidth;H=wrap.clientHeight;cv.width=W*DPR;cv.height=H*DPR;cv.style.width=W+'px';cv.style.height=H+'px';ctx.setTransform(DPR,0,0,DPR,0,0);if(screen!=='app')return;if(view==='galaxy')refitGalaxy();else if(view==='hub'){refitHub();refitGalaxy();}}
+  var _spreadT=null,galaxyDirty=false;function scheduleSpread(){if(!galaxyDirty)return;clearTimeout(_spreadT);_spreadT=setTimeout(function(){if(screen==='app'&&view==='galaxy')spreadGalaxy();},220);}
+  function size(){W=wrap.clientWidth;H=wrap.clientHeight;cv.width=W*DPR;cv.height=H*DPR;cv.style.width=W+'px';cv.style.height=H+'px';ctx.setTransform(DPR,0,0,DPR,0,0);if(screen!=='app')return;if(view==='galaxy'){refitGalaxy();scheduleSpread();}else if(view==='hub'){refitHub();refitGalaxy();}}
   size();window.addEventListener('resize',size);
 
   function rgba(h,a){if(!h||h[0]!=='#')return h;var n=parseInt(h.slice(1),16);return'rgba('+((n>>16)&255)+','+((n>>8)&255)+','+(n&255)+','+a+')';}
@@ -245,8 +246,10 @@
     if(!W||!H)return;
     var nodes=layoutNodes();
     if(!nodes.length){layoutReady=false;return;}
+    // center & scale on the meaningful topic nodes only (ambient fillers skew the bbox)
+    var fit=nodes.filter(function(n){return !/^f[0-9]$/.test(n.k);});if(!fit.length)fit=nodes;
     var minX=Infinity,minY=Infinity,maxX=-Infinity,maxY=-Infinity,i,r;
-    for(i=0;i<nodes.length;i++){r=nodes[i]._br||nodes[i].r||MINR;minX=Math.min(minX,nodes[i]._bx-r);minY=Math.min(minY,nodes[i]._by-r);maxX=Math.max(maxX,nodes[i]._bx+r);maxY=Math.max(maxY,nodes[i]._by+r);}
+    for(i=0;i<fit.length;i++){r=fit[i]._br||fit[i].r||MINR;minX=Math.min(minX,fit[i]._bx-r);minY=Math.min(minY,fit[i]._by-r);maxX=Math.max(maxX,fit[i]._bx+r);maxY=Math.max(maxY,fit[i]._by+r);}
     var bw=Math.max(maxX-minX,220),bh=Math.max(maxY-minY,170),bcx=(minX+maxX)/2,bcy=(minY+maxY)/2;
     var pad=FIT_PAD,sx=(W-pad*2)/bw,sy=(H-pad*2)/bh,s=Math.min(sx,sy);
     if(!isFinite(s)||s<=0)s=1;
@@ -262,7 +265,7 @@
     var T=(name==='blank')?{hubs:[],kids:[],ghosts:[],edges:[],INNER:{},NAV:{},notes:{}}:TEMPLATES[name];
     hubs=(T.hubs||[]).map(cloneNode);kids=(T.kids||[]).map(cloneNode);ghosts=(T.ghosts||[]).map(cloneNode);fillers=ambientFillers.map(cloneNode);extras=[];
     edges=(T.edges||[]).map(function(e){return{a:e[0],b:e[1],dash:false};});
-    INNER=T.INNER||{};NAV=T.NAV||{};notes=JSON.parse(JSON.stringify(T.notes||{}));actionsStore={};eventsStore={};thoughtLog=[];
+    INNER=T.INNER||{};NAV=T.NAV||{};notes=JSON.parse(JSON.stringify(T.notes||{}));actionsStore={};eventsStore={};thoughtLog=[];galaxyDirty=false;
     M={};isHub={};[].concat(hubs,kids,ghosts,fillers).forEach(function(n){M[n.k]=n;});hubs.forEach(function(h){isHub[h.k]=true;});
     kids.forEach(function(k){(k.links||[]).forEach(function(l){edges.push({a:k.k,b:l,dash:false});});});
     ghosts.forEach(function(g){(g.links||[]).forEach(function(l){edges.push({a:g.k,b:l,dash:true});});});
@@ -391,7 +394,7 @@
   function pickNode(px,py){var ns=[].concat(ghosts,hubs,kids,extras);for(var i=ns.length-1;i>=0;i--){var n=ns[i],a=px-n.sx,b=py-n.sy;if(a*a+b*b<=(n.r+6)*(n.r+6))return n;}return null;}
   function pickEdge(px,py){for(var i=0;i<edges.length;i++){var A=M[edges[i].a],B=M[edges[i].b];if(A&&B&&segDist(px,py,A.sx,A.sy,B.sx,B.sy)<8)return edges[i];}return null;}
   function selectNode(n){sel=n;selEdge=null;}function selectEdge(e){selEdge=e;sel=null;}function deselect(){sel=null;selEdge=null;}
-  function addEdge(a,b){if(!a||!b||a===b)return;if(!edges.some(function(e){return(e.a===a.k&&e.b===b.k)||(e.a===b.k&&e.b===a.k);}))edges.push({a:a.k,b:b.k,dash:false});}
+  function addEdge(a,b,w){if(!a||!b||a===b)return;w=w||1;for(var i=0;i<edges.length;i++){var e=edges[i];if((e.a===a.k&&e.b===b.k)||(e.a===b.k&&e.b===a.k)){e.w=(e.w||1)+w;return;}}edges.push({a:a.k,b:b.k,dash:false,w:w});}
   function removeNode(n){[hubs,kids,ghosts,extras].forEach(function(arr){var i=arr.indexOf(n);if(i>=0)arr.splice(i,1);});delete M[n.k];edges=edges.filter(function(e){return e.a!==n.k&&e.b!==n.k;});if(sel===n)sel=null;}
   nDel.onclick=function(ev){ev.stopPropagation();if(sel)removeNode(sel);};
   nLink.onclick=function(ev){ev.stopPropagation();if(sel)linking=sel;};
@@ -551,10 +554,82 @@
   function submit(){var inp=document.getElementById('noteinput');var txt=(inp.value||'').trim();if(!txt)return;categorize(txt);}
   function pushNote(key,obj){notes[key]=notes[key]||[];notes[key].unshift(obj);}
   function avg(a){return a.reduce(function(x,y){return x+y;},0)/a.length;}
-  function placeNear(connects){var xs=[],ys=[];(connects||[]).forEach(function(k){k=(k||'').toLowerCase();if(M[k]){xs.push(M[k].x);ys.push(M[k].y);}});var cx=xs.length?avg(xs):(W/2-woX),cy=ys.length?avg(ys):(H/2-woY);return{x:cx+(Math.random()*150-75),y:cy+(Math.random()*150-75)};}
+  function placeNear(connects){
+    var xs=[],ys=[];(connects||[]).forEach(function(k){k=(k||'').toLowerCase();if(M[k]){xs.push(M[k].x);ys.push(M[k].y);}});
+    if(xs.length)return{x:avg(xs)+(Math.random()*120-60),y:avg(ys)+(Math.random()*120-60)};
+    // no existing connection: distribute evenly across the page via a phyllotaxis (sunflower) layout
+    var ns=[].concat(hubs,kids,extras).filter(function(p){return p.k.indexOf('_ib')!==0&&!/^f[0-9]$/.test(p.k);});
+    var cx,cy;
+    if(ns.length){var sx=0,sy=0;ns.forEach(function(p){sx+=p.x;sy+=p.y;});cx=sx/ns.length;cy=sy/ns.length;}
+    else{cx=W/2-woX;cy=H/2-woY;}
+    var idx=ns.length,ang=idx*2.399963229728653,rad=Math.min(W,H)*0.13*Math.sqrt(idx+1);
+    return{x:cx+Math.cos(ang)*rad+(Math.random()*30-15),y:cy+Math.sin(ang)*rad+(Math.random()*30-15)};
+  }
   function createTopicBubble(key,tp){var col=pal[hsum(key)%pal.length];var p=placeNear(tp.connects);var tr=Math.max(MINR,Math.min(MAXR,MINR+(tp.weight||2)*6));var n={k:key,x:p.x,y:p.y,r:tr,tr:tr,c:col,dp:0.95,t0:performance.now()};shape(n);setTarget(n);n.alpha=n.talpha;syncNodeBase(n);hubs.push(n);M[key]=n;isHub[key]=true;return n;}
   function bump(node,weight){node.tr=Math.max(MINR,Math.min(MAXR,(node.tr||node.r)+(weight||2)*2.4));setTarget(node);}
-  function applyExtraction(d,original){var date=new Date(),stamp=date.toLocaleDateString(undefined,{weekday:'short'})+' \u00b7 '+date.toLocaleTimeString(undefined,{hour:'numeric',minute:'2-digit'});
+  // force-directed layout: unconnected bubbles repel, connected bubbles attract (stronger edges pull harder), then refit
+  function spreadGalaxy(){
+    if(!W||!H)return;
+    var ns=[].concat(hubs,kids,extras).filter(function(p){return p.k.indexOf('_ib')!==0&&!/^f[0-9]$/.test(p.k);});
+    var N=ns.length;
+    if(N<2){refitGalaxy();return;}
+    // edge-strength lookup (default strength 1)
+    var emap={};edges.forEach(function(e){if(M[e.a]&&M[e.b])emap[e.a+'|'+e.b]=e.w||1;});
+    function strength(a,b){return emap[a.k+'|'+b.k]||emap[b.k+'|'+a.k]||0;}
+    var k=Math.sqrt(W*H/N)*0.55;   // ideal separation between nodes
+    var temp=Math.min(W,H)*0.18,i,j;
+    var dx,dy,d,ux,uy;
+    var dispx=[],dispy=[];
+    for(var t=0;t<320;t++){
+      for(i=0;i<N;i++){dispx[i]=0;dispy[i]=0;}
+      // repulsion between every pair
+      for(i=0;i<N;i++){var a=ns[i];
+        for(j=i+1;j<N;j++){var b=ns[j];
+          dx=a.x-b.x;dy=a.y-b.y;d=Math.sqrt(dx*dx+dy*dy)||0.01;ux=dx/d;uy=dy/d;
+          var rep=k*k/d;
+          dispx[i]+=ux*rep;dispy[i]+=uy*rep;dispx[j]-=ux*rep;dispy[j]-=uy*rep;
+        }
+      }
+      // attraction along edges, scaled by connection strength
+      for(i=0;i<N;i++){var a2=ns[i];
+        for(j=i+1;j<N;j++){var b2=ns[j];
+          var s=strength(a2,b2);if(!s)continue;
+          dx=a2.x-b2.x;dy=a2.y-b2.y;d=Math.sqrt(dx*dx+dy*dy)||0.01;ux=dx/d;uy=dy/d;
+          var att=d*d/k*(0.5+s*0.55);
+          dispx[i]-=ux*att;dispy[i]-=uy*att;dispx[j]+=ux*att;dispy[j]+=uy*att;
+        }
+      }
+      // aspect-ratio-biased gravity: spread to match the screen shape so refit fills the whole page
+      var cgx=0,cgy=0;for(i=0;i<N;i++){cgx+=ns[i].x;cgy+=ns[i].y;}cgx/=N;cgy/=N;
+      var sq=Math.sqrt((W/H)||1),gx=0.05/sq,gy=0.05*sq;
+      for(i=0;i<N;i++){dispx[i]+=(cgx-ns[i].x)*gx;dispy[i]+=(cgy-ns[i].y)*gy;}
+      // apply displacement, capped by current temperature
+      for(i=0;i<N;i++){
+        var dl=Math.sqrt(dispx[i]*dispx[i]+dispy[i]*dispy[i])||0.01,lim=Math.min(dl,temp);
+        ns[i].x+=dispx[i]/dl*lim;ns[i].y+=dispy[i]/dl*lim;
+      }
+      temp*=0.985;
+    }
+    // final collision pass so nothing overlaps
+    for(t=0;t<80;t++){var moved=0;
+      for(i=0;i<N;i++){var a3=ns[i];
+        for(j=i+1;j<N;j++){var b3=ns[j];
+          dx=b3.x-a3.x;dy=b3.y-a3.y;d=Math.sqrt(dx*dx+dy*dy)||0.01;var min=a3.r+b3.r+22;
+          if(d<min){var push=(min-d)*0.5;ux=dx/d;uy=dy/d;a3.x-=ux*push;a3.y-=uy*push;b3.x+=ux*push;b3.y+=uy*push;moved++;}
+        }
+      }
+      if(!moved)break;
+    }
+    // rotate the whole layout so its longest axis lines up with the screen's longest side (best for chains)
+    var rcx=0,rcy=0;for(i=0;i<N;i++){rcx+=ns[i].x;rcy+=ns[i].y;}rcx/=N;rcy/=N;
+    var sxx=0,syy=0,sxy=0;for(i=0;i<N;i++){var rdx=ns[i].x-rcx,rdy=ns[i].y-rcy;sxx+=rdx*rdx;syy+=rdy*rdy;sxy+=rdx*rdy;}
+    var theta=0.5*Math.atan2(2*sxy,sxx-syy),target=(W>=H)?0:Math.PI/2,rot=target-theta;
+    var cr=Math.cos(rot),sr=Math.sin(rot);
+    for(i=0;i<N;i++){var px=ns[i].x-rcx,py=ns[i].y-rcy;ns[i].x=rcx+px*cr-py*sr;ns[i].y=rcy+px*sr+py*cr;}
+    ns.forEach(syncNodeBase);
+    refitGalaxy();
+  }
+  function applyExtraction(d,original){galaxyDirty=true;var date=new Date(),stamp=date.toLocaleDateString(undefined,{weekday:'short'})+' \u00b7 '+date.toLocaleTimeString(undefined,{hour:'numeric',minute:'2-digit'});
     thoughtLog.unshift({text:original,ts:date,stamp:stamp,topics:(d.topics||[]).map(function(t){return{name:t.name,c:pal[hsum(t.name)%pal.length]};}),summary:d.summary||'',concerns:d.concerns||[],actions:(d.actionItems||[]).map(function(a){return a.text;}),events:d.events||[]});
     var meta={summary:d.summary||'',concerns:d.concerns||[],topics:(d.topics||[]).map(function(t){return t.name;}),events:d.events||[],actions:(d.actionItems||[]).map(function(a){return a.text;})};
     (d.topics||[]).forEach(function(tp){var key=(tp.name||'').toLowerCase().trim();if(!key)return;if(!M[key])createTopicBubble(key,tp);else bump(M[key],tp.weight);pushNote(key,{d:stamp,len:'note',t:original,meta:meta});});
@@ -562,7 +637,7 @@
     var first=(d.topics&&d.topics[0])?d.topics[0].name.toLowerCase():null;
     (d.actionItems||[]).forEach(function(ai){var k=(ai.topic||'').toLowerCase().trim();if(!M[k])k=first;if(k){actionsStore[k]=actionsStore[k]||[];actionsStore[k].push({text:ai.text,done:false});}});
     (d.events||[]).forEach(function(ev){var k=(ev.topic||'').toLowerCase().trim();if(!M[k])k=first;if(k){eventsStore[k]=eventsStore[k]||[];eventsStore[k].push({title:ev.title,date:ev.date});if(M[k])bump(M[k],2);}});
-    refitGalaxy();}
+    spreadGalaxy();}
   function existingTopics(){return Object.keys(M).filter(function(k){return!/^f[0-9]$/.test(k)&&k.indexOf('_ib')!==0;});}
   function extractLocal(text,ex){
     var lower=text.toLowerCase(),sentences=text.split(/[.!?;\n]+/).filter(function(s){return s.trim();});
