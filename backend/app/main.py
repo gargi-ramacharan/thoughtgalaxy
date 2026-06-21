@@ -89,6 +89,8 @@ async def ws_transcribe(ws: WebSocket):
     loop = asyncio.get_event_loop()
     accumulated: list[str] = []
     sid = str(uuid.uuid4())
+    ws_graph: dict | None = None
+    ws_request_actions = False
 
     def on_transcript(text: str, is_final: bool):
         if is_final:
@@ -144,7 +146,7 @@ async def ws_transcribe(ws: WebSocket):
         full = " ".join(accumulated).strip()
         try:
             if full:
-                result = extract_thought(full, existing_topics=[])
+                result = extract_thought(full, existing_topics=[], graph=ws_graph, request_actions=ws_request_actions)
                 await ws.send_json({"type": "extraction", "data": result})
             await ws.close()
         except Exception as e:
