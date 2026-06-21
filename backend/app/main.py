@@ -305,6 +305,8 @@ def calendar_status():
 def calendar_auth():
     if not os.path.exists(GOOGLE_CREDS_PATH):
         return {"error": f"google_credentials.json not found at {GOOGLE_CREDS_PATH}"}
+    # Required for localhost http:// (not https://)
+    os.environ["OAUTHLIB_INSECURE_TRANSPORT"] = "1"
     try:
         from google_auth_oauthlib.flow import Flow
         flow = Flow.from_client_secrets_file(
@@ -313,6 +315,9 @@ def calendar_auth():
             redirect_uri="http://localhost:8000/calendar/callback",
         )
         auth_url, state = flow.authorization_url(prompt="consent", access_type="offline")
+        # Save the whole flow object — it holds the PKCE code_verifier generated
+        # during authorization_url(). Creating a new Flow in the callback loses it.
+        _cal_state["flow"] = flow
         _cal_state["state"] = state
         return RedirectResponse(auth_url)
     except Exception as e:
@@ -320,22 +325,21 @@ def calendar_auth():
 
 
 @app.get("/calendar/callback")
-def calendar_callback(code: str, state: str = ""):
+def calendar_callback(code: str, state: str = ""):  # noqa: ARG001 — state received but not used; flow object carries the verifier
+    os.environ["OAUTHLIB_INSECURE_TRANSPORT"] = "1"
     try:
-        from google_auth_oauthlib.flow import Flow
-        flow = Flow.from_client_secrets_file(
-            GOOGLE_CREDS_PATH,
-            scopes=CALENDAR_SCOPES,
-            redirect_uri="http://localhost:8000/calendar/callback",
-            state=_cal_state.get("state"),
-        )
+        flow = _cal_state.get("flow")
+        if not flow:
+            raise RuntimeError("OAuth flow not found — click 'connect calendar' again to restart")
         flow.fetch_token(code=code)
         creds = flow.credentials
         with open(GOOGLE_TOKEN_PATH, "w") as f:
             f.write(creds.to_json())
+        _cal_state.pop("flow", None)
         return RedirectResponse("http://localhost:5173?calendar=connected")
     except Exception as e:
-        return RedirectResponse(f"http://localhost:5173?calendar=error")
+        print(f"[calendar/callback] error: {e}")
+        return RedirectResponse(f"http://localhost:5173?calendar=error&reason={str(e)[:120]}")
 
 
 @app.post("/calendar/add-event")
