@@ -12,5 +12,8 @@ sentry-sdk==2.14.0
 arize==7.19.0
 pandas==2.2.2
 python-dotenv==1.0.1
+google-auth-oauthlib==1.4.0
+google-auth-httplib2==0.4.0
+google-api-python-client==2.197.0
 redisvl==0.3.9
 sentence-transformers==3.3.1
