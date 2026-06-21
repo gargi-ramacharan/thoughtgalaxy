@@ -3,3 +3,6 @@ __pycache__/
 *.pyo
 .env
 venv/
+.venv/
+google_credentials.json
+token_calendar.json
