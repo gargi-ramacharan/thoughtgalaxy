@@ -17,9 +17,19 @@ import json
 import datetime
 import asyncio
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi.responses import RedirectResponse
 from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
 load_dotenv()
+
+BACKEND_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+GOOGLE_CREDS_PATH = os.environ.get(
+    "GOOGLE_CREDENTIALS_PATH",
+    os.path.join(BACKEND_DIR, "google_credentials.json"),
+)
+GOOGLE_TOKEN_PATH = os.path.join(BACKEND_DIR, "token_calendar.json")
+CALENDAR_SCOPES = ["https://www.googleapis.com/auth/calendar.events"]
+_cal_state: dict = {}  # holds OAuth state between /auth and /callback
 
 import app.observability  # noqa: F401  — initializes Sentry/Arize on import
 from app.classify import classify_transcript
@@ -188,3 +198,112 @@ async def execute(req: ExecuteRequest):
     result = await dispatch_task(node)
     node.status = "done" if result.get("ok") else "failed"
     return {"node_id": node.id, "status": node.status, "result": result}
+
+
+# ─────────────────────────── Extract thought ────────────────────────
+@app.post("/extract-thought")
+def extract_thought_endpoint(payload: dict):
+    """Mindmap UI calls this: text → topics + events + action items (Claude-powered)."""
+    from app.extract import extract_thought
+    text = payload.get("text", "")
+    existing = payload.get("existing_topics", [])
+    return extract_thought(text, existing)
+
+
+# ─────────────────────────── Google Calendar ────────────────────────
+@app.get("/calendar/status")
+def calendar_status():
+    if not os.path.exists(GOOGLE_TOKEN_PATH):
+        return {"connected": False}
+    try:
+        from google.oauth2.credentials import Credentials
+        from google.auth.transport.requests import Request as GRequest
+        creds = Credentials.from_authorized_user_file(GOOGLE_TOKEN_PATH, CALENDAR_SCOPES)
+        if creds.expired and creds.refresh_token:
+            creds.refresh(GRequest())
+            with open(GOOGLE_TOKEN_PATH, "w") as f:
+                f.write(creds.to_json())
+        return {"connected": creds.valid}
+    except Exception as e:
+        return {"connected": False, "error": str(e)}
+
+
+@app.get("/calendar/auth")
+def calendar_auth():
+    if not os.path.exists(GOOGLE_CREDS_PATH):
+        return {"error": f"google_credentials.json not found at {GOOGLE_CREDS_PATH}"}
+    try:
+        from google_auth_oauthlib.flow import Flow
+        flow = Flow.from_client_secrets_file(
+            GOOGLE_CREDS_PATH,
+            scopes=CALENDAR_SCOPES,
+            redirect_uri="http://localhost:8000/calendar/callback",
+        )
+        auth_url, state = flow.authorization_url(prompt="consent", access_type="offline")
+        _cal_state["state"] = state
+        return RedirectResponse(auth_url)
+    except Exception as e:
+        return {"error": str(e)}
+
+
+@app.get("/calendar/callback")
+def calendar_callback(code: str, state: str = ""):
+    try:
+        from google_auth_oauthlib.flow import Flow
+        flow = Flow.from_client_secrets_file(
+            GOOGLE_CREDS_PATH,
+            scopes=CALENDAR_SCOPES,
+            redirect_uri="http://localhost:8000/calendar/callback",
+            state=_cal_state.get("state"),
+        )
+        flow.fetch_token(code=code)
+        creds = flow.credentials
+        with open(GOOGLE_TOKEN_PATH, "w") as f:
+            f.write(creds.to_json())
+        return RedirectResponse("http://localhost:5173?calendar=connected")
+    except Exception as e:
+        return RedirectResponse(f"http://localhost:5173?calendar=error")
+
+
+@app.post("/calendar/add-event")
+def calendar_add_event(payload: dict):
+    if not os.path.exists(GOOGLE_TOKEN_PATH):
+        return {"ok": False, "error": "Calendar not connected. Visit /calendar/auth first."}
+    try:
+        from google.oauth2.credentials import Credentials
+        from google.auth.transport.requests import Request as GRequest
+        from googleapiclient.discovery import build
+
+        creds = Credentials.from_authorized_user_file(GOOGLE_TOKEN_PATH, CALENDAR_SCOPES)
+        if creds.expired and creds.refresh_token:
+            creds.refresh(GRequest())
+            with open(GOOGLE_TOKEN_PATH, "w") as f:
+                f.write(creds.to_json())
+
+        service = build("calendar", "v3", credentials=creds)
+
+        title = payload.get("title", "Thought Galaxy Event")
+        datetime_iso = payload.get("datetime")
+        duration_min = int(payload.get("duration_min", 60))
+        description = payload.get("description", "")
+
+        if datetime_iso:
+            start = datetime.datetime.fromisoformat(datetime_iso)
+        else:
+            start = (datetime.datetime.now() + datetime.timedelta(days=1)).replace(
+                hour=10, minute=0, second=0, microsecond=0
+            )
+
+        end = start + datetime.timedelta(minutes=duration_min)
+        tz = os.environ.get("CALENDAR_TZ", "America/New_York")
+
+        body = {
+            "summary": title,
+            "description": description,
+            "start": {"dateTime": start.isoformat(), "timeZone": tz},
+            "end": {"dateTime": end.isoformat(), "timeZone": tz},
+        }
+        event = service.events().insert(calendarId="primary", body=body).execute()
+        return {"ok": True, "link": event.get("htmlLink"), "title": title}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}

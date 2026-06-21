@@ -40,10 +40,15 @@ PLACE_WORDS = ("airport", "flight", "trip", "travel", "hotel", "campus", "office
 
 
 def _system_prompt(existing_topics: list[str]) -> str:
+    import datetime
+    today = datetime.date.today().strftime("%A, %B %d, %Y")
     existing = ", ".join(existing_topics) if existing_topics else "(none yet)"
     return f"""You extract structure from a person's short journal or voice-note text for a mind-map journaling app. Return ONLY a JSON object and nothing else (no prose, no markdown fences).
+
+Today is {today}. Use this to resolve relative dates like "next Friday", "tomorrow", "this weekend", "Tuesday 3-4pm".
+
 Schema:
-{{"summary":string,"topics":[{{"name":string,"status":"new"|"existing","kind":"topic"|"person"|"place","weight":number,"connects":[string]}}],"concerns":[string],"actionItems":[{{"text":string,"topic":string}}],"events":[{{"title":string,"date":string,"topic":string}}]}}
+{{"summary":string,"topics":[{{"name":string,"status":"new"|"existing","kind":"topic"|"person"|"place","weight":number,"connects":[string]}}],"concerns":[string],"actionItems":[{{"text":string,"topic":string}}],"events":[{{"title":string,"date":string,"datetime":string,"duration_min":number,"topic":string}}]}}
 Rules:
 - topics are the main ideas / areas of life mentioned. Names are short and lowercase.
 - weight is 1-5: how central/important this topic is in THIS entry.
@@ -51,7 +56,8 @@ Rules:
 - 'connects' lists other topic names from this same response that are related.
 - Only include actionItems and events when genuinely implied. Many plain reflections have NONE — return empty arrays then; never invent them.
 - events have a time/date (deadlines, appointments, trips). actionItems are tasks the person could do.
-- 'kind' is person for named people, place for locations/trips, else topic."""
+- 'kind' is person for named people, place for locations/trips, else topic.
+- For events: 'date' is human-readable (e.g. "Friday June 27"), 'datetime' is ISO 8601 (e.g. "2026-06-27T15:00:00"). For a range like "3-4pm" set duration_min=60 and datetime to start. Default time 10:00 if none given. duration_min defaults to 60."""
 
 
 def _mentions(text: str, term: str) -> int:
