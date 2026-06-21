@@ -1,0 +1,102 @@
+/* Thought Galaxy — a quiet, deep-space canvas so the bubbles glow.
+   The aesthetic risk: near-black isn't novel on its own, so the signature is
+   the bubbles themselves as soft light sources against depth, plus a faint
+   nebula wash rather than flat black. */
+
+:root {
+  --bg-0: #0a0a14;
+  --bg-1: #14121f;
+  --task: #5b8def;
+  --emotion: #e8896b;
+  --idea: #9b7ede;
+  --ink: #f4f2fb;
+  --muted: #9a96b0;
+}
+
+* { box-sizing: border-box; margin: 0; }
+
+body {
+  font-family: "Inter", system-ui, sans-serif;
+  color: var(--ink);
+  background:
+    radial-gradient(900px 600px at 70% 20%, rgba(91, 141, 239, 0.12), transparent),
+    radial-gradient(700px 500px at 20% 80%, rgba(155, 126, 222, 0.12), transparent),
+    var(--bg-0);
+  overflow: hidden;
+}
+
+.app { height: 100vh; display: flex; flex-direction: column; }
+
+header { padding: 24px 32px 8px; }
+header h1 {
+  font-size: 26px; font-weight: 700; letter-spacing: -0.02em;
+  background: linear-gradient(90deg, #cdb4ff, #8fb4ff);
+  -webkit-background-clip: text; background-clip: text; color: transparent;
+}
+.tag { color: var(--muted); font-size: 14px; margin-top: 2px; }
+
+.canvas { flex: 1; position: relative; }
+
+.empty {
+  position: absolute; inset: 0; display: grid; place-items: center;
+  color: var(--muted); font-size: 15px; pointer-events: none;
+}
+
+.partial {
+  position: absolute; bottom: 110px; left: 50%; transform: translateX(-50%);
+  max-width: 70%; text-align: center; color: var(--ink);
+  background: rgba(255, 255, 255, 0.06); border: 1px solid rgba(255,255,255,0.08);
+  padding: 10px 18px; border-radius: 999px; font-size: 15px; backdrop-filter: blur(8px);
+}
+
+.orb {
+  position: absolute; bottom: 28px; left: 50%; transform: translateX(-50%);
+  padding: 16px 30px; border-radius: 999px; border: none; cursor: pointer;
+  color: white; font-size: 15px; font-weight: 600; letter-spacing: 0.01em;
+  background: linear-gradient(135deg, #6d5fe0, #5b8def);
+  box-shadow: 0 8px 30px rgba(91, 141, 239, 0.4);
+  transition: transform 0.12s ease, box-shadow 0.2s ease;
+}
+.orb:active { transform: translateX(-50%) scale(0.97); }
+.orb.live {
+  background: linear-gradient(135deg, #e8896b, #d96f8f);
+  box-shadow: 0 0 0 0 rgba(232, 137, 107, 0.6);
+  animation: pulse 1.4s infinite;
+}
+@keyframes pulse {
+  0% { box-shadow: 0 0 0 0 rgba(232, 137, 107, 0.5); }
+  70% { box-shadow: 0 0 0 18px rgba(232, 137, 107, 0); }
+  100% { box-shadow: 0 0 0 0 rgba(232, 137, 107, 0); }
+}
+
+/* guidance / execution card */
+.card {
+  position: absolute; top: 50%; right: 32px; transform: translateY(-50%);
+  width: 340px; padding: 22px; border-radius: 20px;
+  background: rgba(20, 18, 31, 0.92); border: 1px solid rgba(255,255,255,0.1);
+  box-shadow: 0 20px 60px rgba(0,0,0,0.5); backdrop-filter: blur(16px);
+}
+.card .close {
+  position: absolute; top: 12px; right: 14px; background: none; border: none;
+  color: var(--muted); font-size: 22px; cursor: pointer; line-height: 1;
+}
+.chip {
+  display: inline-block; font-size: 11px; text-transform: uppercase;
+  letter-spacing: 0.08em; padding: 3px 10px; border-radius: 999px; margin-bottom: 10px;
+}
+.chip.task { background: rgba(91,141,239,0.2); color: #aac4ff; }
+.chip.emotion { background: rgba(232,137,107,0.2); color: #ffc0ab; }
+.chip.idea { background: rgba(155,126,222,0.2); color: #d5c2ff; }
+.card h3 { font-size: 18px; margin-bottom: 12px; }
+.suggestion { font-size: 15px; line-height: 1.55; color: var(--ink); }
+.muted { color: var(--muted); font-style: italic; }
+.drawn { margin-top: 12px; font-size: 12px; color: var(--muted); }
+
+.exec, .card .ok, .card .fail { margin-top: 16px; }
+.exec {
+  width: 100%; padding: 11px; border-radius: 12px; border: none; cursor: pointer;
+  font-weight: 600; color: white; background: linear-gradient(135deg,#5b8def,#6d5fe0);
+}
+.exec:disabled { opacity: 0.6; cursor: default; }
+.ok { color: #7fe0a8; font-size: 14px; }
+.fail { color: #ff9b9b; font-size: 14px; }
