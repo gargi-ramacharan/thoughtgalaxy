@@ -39,29 +39,90 @@ PERSON_RE = re.compile(r"\b([A-Z][a-z]{2,})\b")
 PLACE_WORDS = ("airport", "flight", "trip", "travel", "hotel", "campus", "office")
 
 
-def _system_prompt(existing_topics: list[str]) -> str:
+def _format_map(graph: dict[str, Any] | None, existing_topics: list[str]) -> str:
+    """Render the user's CURRENT mind-map (hubs + their subtopics + aliases) so the
+    model can reconcile a new thought against what already exists."""
+    nodes = graph.get("nodes") if isinstance(graph, dict) else None
+    if not nodes:
+        existing = ", ".join(existing_topics) if existing_topics else "(none yet)"
+        return f"(no map yet; existing topic names: {existing})"
+    lines: list[str] = []
+    for nd in nodes:
+        name = (nd.get("name") or "").strip()
+        if not name:
+            continue
+        aliases = [a for a in (nd.get("aliases") or []) if a]
+        contribution = (nd.get("contribution") or "").strip()
+        line = f'- "{name}"'
+        if aliases:
+            line += f' (also known as: {", ".join(aliases)})'
+        if contribution:
+            line += f" — {contribution}"
+        lines.append(line)
+        for st in (nd.get("subtopics") or []):
+            sn = (st.get("name") or "").strip()
+            if not sn:
+                continue
+            sc = (st.get("contribution") or "").strip()
+            lines.append(f'    • "{sn}"' + (f" — {sc}" if sc else ""))
+    return "\n".join(lines) if lines else "(no map yet)"
+
+
+def _system_prompt(existing_topics: list[str], graph: dict[str, Any] | None = None,
+                   request_actions: bool = False) -> str:
     import datetime
     today = datetime.date.today().strftime("%A, %B %d, %Y")
-    existing = ", ".join(existing_topics) if existing_topics else "(none yet)"
-    return f"""You extract structure from a person's short journal or voice-note text for a mind-map journaling app. Return ONLY a JSON object and nothing else (no prose, no markdown fences).
+    current_map = _format_map(graph, existing_topics)
+    if request_actions:
+        action_rule = (
+            "- actionItems: ALWAYS propose concrete, helpful next steps you could take, "
+            "even if the text does not explicitly state a task. Infer 1-4 useful, specific, actionable "
+            "suggestions grounded in what you wrote (e.g. 'text Josh to ask if he's free Saturday'). "
+            "Still include any tasks you explicitly mentioned. Each actionItem's 'topic' is the related topic name."
+        )
+    else:
+        action_rule = (
+            "- Only include actionItems when genuinely implied by the text (you mention a task you "
+            "could/should do). Do NOT invent action items for plain reflections — return an empty array then."
+        )
+    return f"""You extract structure from a person's short journal or voice-note text for a mind-map journaling app, AND reconcile it against the map they have built so far. Return ONLY a JSON object and nothing else (no prose, no markdown fences).
+
+VOICE — IMPORTANT: every piece of human-readable text you generate (title, summary, each topic/subtopic 'contribution', concerns, actionItems) must address the writer directly as "you"/"your". NEVER refer to the writer in the third person — do NOT write "the user", "the person", "they", "she", or "he". E.g. write "you're stressed about your CS midterm", not "the user is stressed about their CS midterm".
 
 Today is {today}. Use this to resolve relative dates like "next Friday", "tomorrow", "this weekend", "Tuesday 3-4pm".
 
+CURRENT MAP (the user's existing hubs, their subtopics indented underneath, and any known aliases):
+{current_map}
+
 Schema:
-{{"title":string,"summary":string,"topics":[{{"name":string,"status":"new"|"existing","kind":"topic"|"person"|"place","weight":number,"connects":[string],"contribution":string,"excerpts":[string],"subtopics":[{{"name":string,"contribution":string,"excerpts":[string]}}]}}],"concerns":[string],"actionItems":[{{"text":string,"topic":string}}],"events":[{{"title":string,"date":string,"datetime":string,"duration_min":number,"topic":string}}]}}
+{{"title":string,"summary":string,"topics":[{{"name":string,"status":"new"|"existing","kind":"topic"|"person"|"place","weight":number,"connects":[string],"contribution":string,"excerpts":[string],"reconcile":{{"action":"none"|"rename"|"merge","target":string}},"subtopics":[{{"name":string,"contribution":string,"excerpts":[string],"reconcile":{{"action":"none"|"merge","target":string}}}}]}}],"concerns":[string],"actionItems":[{{"text":string,"topic":string}}],"events":[{{"title":string,"date":string,"datetime":string,"duration_min":number,"topic":string}}]}}
 Rules:
 - title is a short (3-6 word) human-friendly headline for THIS whole entry.
 - topics are the main ideas / areas of life mentioned. Names are short and lowercase.
-- CRITICAL: Do NOT over-split. If someone says "I have a CS midterm and I'm stressed about it", that is ONE topic (e.g. "school" or "midterm stress"), not two or three. One coherent worry, situation, or area of life = one topic. Err heavily toward fewer, broader topics.
-- Maximum 4 topics per entry unless the person explicitly mentions 4+ clearly separate areas of life. Most entries should produce 2-3 topics.
+- THE WRITER IS NEVER A TOPIC. The writer ("I"/"me") is the implicit center of the entire map, not a bubble. NEVER create a topic, subtopic, or person for the writer themselves — not even when they state or correct their own name or identity. Statements like "I'm Linda", "actually this is from my perspective", "I wrote this", or "I am the one who got the letter" are PERSPECTIVE/IDENTITY information, NOT new topics. Do NOT emit a topic like "being linda", "me", "myself", or the writer's own name. Instead, silently adopt that perspective and use it to CORRECT existing topics (see REFRAME below). The only people who become 'person' topics are OTHERS the writer talks about.
+- AIM FOR 3-4 TOPICS whenever the entry has enough substance to support them. If you wrote or said several sentences about ONE subject, break its distinct facets into SEPARATE top-level topics (each becomes its own bubble), and link them with 'connects' — a richer spread of bubbles gets far more out of the visualization than one bubble with everything buried inside it. Example: a few sentences about someone you're seeing should become topics like "elliot jang", "what draws me to him", "red flags & harm", and "staying guarded" — NOT a single "elliot jang" topic with those buried as subtopics. The central subject (e.g. the person) is one topic; each major angle you reflect on becomes its own connected topic.
+- BUT never manufacture topics out of thin air — only split when the text genuinely contains distinct facets. Let the NUMBER OF TOPICS SCALE WITH THE LENGTH AND RICHNESS of the entry, with no fixed upper limit: a single short idea like "matcha tastes good" = 1 topic; "I have a CS midterm and I'm stressed about it" = 1 topic (one coherent worry); 2-3 sentences touching distinct angles = 2-3 topics; a few sentences with several distinct facets = 3-4 topics; a long, multi-paragraph entry that genuinely covers many distinct facets can have 5, 6, or more topics. The longer and more wide-ranging the text, the more bubbles it should produce — just make sure every topic corresponds to something actually distinct in the text, never filler.
+- When in doubt between burying a substantial facet as a subtopic vs. promoting it to its own top-level topic, PROMOTE it.
 - weight is 1-5: how central/important this topic is in THIS entry.
-- Reuse these EXISTING topics when they fit (status 'existing'); otherwise 'new': {existing}.
 - 'connects' lists other topic names from this same response that are related.
 - 'contribution' is ONE short sentence on how this entry relates to / contributes to this topic.
 - 'excerpts' is 1-3 SHORT verbatim substrings copied EXACTLY, character-for-character, from the input text that pertain to this topic. Do NOT paraphrase, reword, fix typos, or change casing — copy exact spans so they can be located in the original. If nothing maps cleanly, return an empty array.
-- 'subtopics' breaks a topic into the distinct facets the entry touches WITHIN that topic (e.g. topic 'school' -> subtopics 'midterms', 'that professor'). Names are short and lowercase. Each subtopic has its own 'contribution' (ONE short sentence on how this entry relates to that facet) and 'excerpts' (1-3 SHORT verbatim substrings, same exact-copy rule as above). ONLY create subtopics when the entry genuinely says distinct things about separate facets of the topic. For a simple thought with nothing to break out, return an EMPTY subtopics array — do NOT invent facets.
-- Only include actionItems and events when genuinely implied. Many plain reflections have NONE — return empty arrays then; never invent them.
-- events have a time/date (deadlines, appointments, trips). actionItems are tasks the person could do.
+- 'subtopics' are for FINER-GRAINED detail nested under a top-level topic, used sparingly. Prefer promoting a substantial facet to its OWN top-level topic (see the 3-4 topics rule above); reserve subtopics for small details that clearly belong inside a single topic and aren't worth their own bubble (e.g. topic 'school' -> subtopic 'that one professor'). Names are short and lowercase. Each subtopic has its own 'contribution' (ONE short sentence on how this entry relates to that facet) and 'excerpts' (1-3 SHORT verbatim substrings, same exact-copy rule as above). For a simple thought with nothing to break out, return an EMPTY subtopics array — do NOT invent facets.
+
+RECONCILIATION (compare each topic to the CURRENT MAP above and decide how it fits):
+- REFRAME ON NEW REALIZATION (do this actively): do NOT just append new topics in the order received. Each entry can CORRECT your earlier understanding. If a new entry reveals that something already on the map was misread — wrong perspective, wrong person, a mistaken assumption, an out-of-date framing — FIX the existing map via rename/merge instead of adding parallel bubbles next to the wrong ones. Ask yourself before adding any topic: "does this actually correct or refine an existing hub?" If so, reconcile it onto that hub.
+  Worked example (perspective correction): Earlier the writer pasted a breakup letter and you assumed the WRITER was the sender, creating hubs from the sender's point of view. Now the writer says "I'm Linda, I'm the one who RECEIVED this." Correct behavior: recognize "linda" is the WRITER (so "linda" must NOT be a hub — if a "linda" hub exists representing the writer, MERGE it into the relationship/feelings hub it really belongs with, or rename it to what it's truly about), keep "simon" (the OTHER person, the sender) as the person hub, and re-anchor the existing topics to the writer's (Linda's) perspective. WRONG: adding a brand-new "being linda" bubble and leaving the misattributed hubs untouched.
+- If an existing hub turns out to represent the WRITER (e.g. it was named after the writer, or built from a misread perspective), it should not stay as its own bubble: MERGE it into the most relevant real topic, or RENAME it to the actual subject it describes.
+- Set status 'existing' and reuse the EXACT existing name when a topic is clearly one already on the map.
+- RENAME (do this EAGERLY): the moment this entry reveals a more specific or proper name for something that already exists on the map as a vaguer/generic hub, RENAME the hub. Output the topic under the NEW proper name and set its reconcile to {{"action":"rename","target":"<OLD existing name>"}}. Renaming is LOW-RISK and REVERSIBLE — the old name is automatically kept as an alias, so nothing is lost. When in doubt, PREFER to rename rather than create a new topic or add a subtopic. A named person/place/thing that is plainly the subject of an existing generic hub MUST rename that hub — never add them as a separate topic or as a subtopic of the generic hub.
+  Worked example: CURRENT MAP has a hub "romantic interest". New entry says "his name is Josh and I think he likes me too." Correct output: a topic with name "josh", reconcile {{"action":"rename","target":"romantic interest"}}. WRONG: making "josh" a new separate topic, or a subtopic of "romantic interest", or leaving the hub named "romantic interest".
+  Generic hubs that should be renamed as soon as a proper name appears include things like: "romantic interest", "crush", "this person", "the guy/girl", "my friend", "someone", "a place", "the trip", "my job", "work thing", "the project". If the entry names them, rename.
+- MERGE: if a topic means essentially the same as an existing hub but you would phrase it differently, set reconcile to {{"action":"merge","target":"<existing hub name>"}} so it folds in instead of creating a near-duplicate.
+- Otherwise set reconcile to {{"action":"none"}} (or omit it).
+- SUBTOPIC DEDUP: do NOT create a subtopic that substantially overlaps an existing sibling subtopic shown in the CURRENT MAP. If a facet is essentially the same as an existing sibling, set that subtopic's reconcile to {{"action":"merge","target":"<existing sibling name>"}}. Prefer a few distinct subtopics over many overlapping ones (e.g. do NOT make 'timing & feasibility', 'timing & access', and 'timing & hesitation' separate siblings — they are one facet about timing).
+{action_rule}
+- Only include events when genuinely implied. Many plain reflections have NONE — return an empty array then; never invent them.
+- events have a time/date (deadlines, appointments, trips). actionItems are tasks you could do.
 - 'kind' is person for named people, place for locations/trips, else topic.
 - For events: 'date' is human-readable (e.g. "Friday June 27"), 'datetime' is ISO 8601 (e.g. "2026-06-27T15:00:00"). For a range like "3-4pm" set duration_min=60 and datetime to start. Default time 10:00 if none given. duration_min defaults to 60."""
 
@@ -201,11 +262,27 @@ def extract_local(text: str, existing_topics: list[str]) -> dict[str, Any]:
     }
 
 
-def extract_thought(text: str, existing_topics: list[str] | None = None) -> dict[str, Any]:
-    """Claude → local rules."""
+def extract_thought(
+    text: str,
+    existing_topics: list[str] | None = None,
+    graph: dict[str, Any] | None = None,
+    request_actions: bool = False,
+) -> dict[str, Any]:
+    """Claude (graph-aware reconciliation) → local rules.
+
+    `graph` is the frontend's current map snapshot: {"nodes":[{name, kind,
+    contribution, aliases:[...], subtopics:[{name, contribution}]}]}. When present
+    it lets Claude rename/merge against what already exists. The local fallback
+    ignores it — it cannot reconcile and just emits dumb topics as before.
+    """
     existing = existing_topics or []
+    # if a graph snapshot is given, derive existing_topics from it for the fallback path
+    if graph and isinstance(graph, dict) and not existing:
+        existing = [n.get("name", "") for n in (graph.get("nodes") or []) if n.get("name")]
     try:
-        data, source, model = chat_json(_system_prompt(existing), text, max_tokens=1500)
+        data, source, model = chat_json(
+            _system_prompt(existing, graph, request_actions), text, max_tokens=1500
+        )
         data["source"] = source
         data["model"] = model
         return data

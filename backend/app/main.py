@@ -74,6 +74,8 @@ async def ws_transcribe(ws: WebSocket):
     loop = asyncio.get_event_loop()
     accumulated: list[str] = []
     sid = str(uuid.uuid4())
+    ws_graph: dict | None = None  # frontend map snapshot, sent with the 'done' frame
+    ws_request_actions = False  # toggle from the 'done' frame
 
     def on_transcript(text: str, is_final: bool):
         # accumulate finalized chunks across the whole session; never reset here
@@ -115,7 +117,12 @@ async def ws_transcribe(ws: WebSocket):
                 # control frame from the client; {"type":"done"} (or bare "done")
                 text = msg["text"]
                 try:
-                    done = (json.loads(text) or {}).get("type") == "done"
+                    ctrl = json.loads(text) or {}
+                    done = ctrl.get("type") == "done"
+                    if isinstance(ctrl.get("graph"), dict):
+                        ws_graph = ctrl["graph"]
+                    if "request_actions" in ctrl:
+                        ws_request_actions = bool(ctrl["request_actions"])
                 except Exception:
                     done = text == "done"
                 if done:
@@ -132,7 +139,7 @@ async def ws_transcribe(ws: WebSocket):
         full = " ".join(accumulated).strip()
         try:
             if full:
-                result = extract_thought(full, existing_topics=[])
+                result = extract_thought(full, existing_topics=[], graph=ws_graph, request_actions=ws_request_actions)
                 await ws.send_json({"type": "extraction", "data": result})
             await ws.close()
         except Exception as e:
@@ -150,7 +157,9 @@ def extract(payload: dict):
     if not text:
         return {"error": "text is required"}
     existing = payload.get("existing_topics") or []
-    return extract_thought(text, existing)
+    graph = payload.get("graph")
+    request_actions = bool(payload.get("request_actions"))
+    return extract_thought(text, existing, graph=graph, request_actions=request_actions)
 
 
 @app.post("/summarize-category")
@@ -293,16 +302,6 @@ async def execute(req: ExecuteRequest):
     result = await dispatch_task(node)
     node.status = "done" if result.get("ok") else "failed"
     return {"node_id": node.id, "status": node.status, "result": result}
-
-
-# ─────────────────────────── Extract thought ────────────────────────
-@app.post("/extract-thought")
-def extract_thought_endpoint(payload: dict):
-    """Mindmap UI calls this: text → topics + events + action items (Claude-powered)."""
-    from app.extract import extract_thought
-    text = payload.get("text", "")
-    existing = payload.get("existing_topics", [])
-    return extract_thought(text, existing)
 
 
 # ─────────────────────────── Google Calendar ────────────────────────
