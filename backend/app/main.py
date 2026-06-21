@@ -62,8 +62,9 @@ def health():
 @app.websocket("/ws/transcribe")
 async def ws_transcribe(ws: WebSocket):
     """Live pipeline. Browser streams audio chunks; we stream back:
-       {type:'partial', text}   interim words (the live-typing effect)
-       {type:'nodes', nodes}    classified bubbles, after each pause
+       {type:'partial', text}        interim words (the live-typing effect)
+       {type:'partial_final', text}  promote interim → final, after each pause
+       {type:'extraction', data}     topics/concerns/events, once the mic stops
     """
     await ws.accept()
     from app.deepgram_stream import make_live_connection
@@ -73,26 +74,25 @@ async def ws_transcribe(ws: WebSocket):
     sid = str(uuid.uuid4())
 
     def on_transcript(text: str, is_final: bool):
-        asyncio.run_coroutine_threadsafe(
-            ws.send_json({"type": "partial", "text": text}), loop
-        )
+        # accumulate finalized chunks across the whole session; never reset here
         if is_final:
             accumulated.append(text)
+        # send the FULL running transcript so the live display shows everything,
+        # not just the latest interim word(s)
+        live = " ".join(accumulated)
+        if not is_final and text:
+            live = (live + " " + text).strip()
+        asyncio.run_coroutine_threadsafe(
+            ws.send_json({"type": "partial", "text": live.strip()}), loop
+        )
 
     def on_utterance_end():
-        # speaker paused — classify what we have so far
+        # speaker paused — tell the frontend the finalized text is settled
         chunk = " ".join(accumulated).strip()
         if not chunk:
             return
-        nodes = classify_transcript(chunk)
         asyncio.run_coroutine_threadsafe(
-            ws.send_json(
-                {"type": "nodes", "nodes": [n.model_dump() for n in nodes]}
-            ),
-            loop,
-        )
-        asyncio.run_coroutine_threadsafe(
-            ws.send_json({"type": "session_id", "session_id": sid}),
+            ws.send_json({"type": "partial_final", "text": chunk}),
             loop,
         )
 
@@ -100,33 +100,41 @@ async def ws_transcribe(ws: WebSocket):
 
     try:
         while True:
-            audio = await ws.receive_bytes()
-            try:
-                dg.send(audio)
-            except Exception as e:
-                print(f"[ws] dg.send failed: {e}")
+            msg = await ws.receive()
+            if msg["type"] == "websocket.disconnect":
                 break
+            if msg.get("bytes") is not None:
+                try:
+                    dg.send(msg["bytes"])
+                except Exception as e:
+                    print(f"[ws] dg.send failed: {e}")
+                    break
+            elif msg.get("text") is not None:
+                # control frame from the client; {"type":"done"} (or bare "done")
+                text = msg["text"]
+                try:
+                    done = (json.loads(text) or {}).get("type") == "done"
+                except Exception:
+                    done = text == "done"
+                if done:
+                    break
     except WebSocketDisconnect:
         pass
     finally:
-        await dg.finish()
-        # persist the finished session
+        # backend owns the close: flush Deepgram, extract, send result, then close.
+        # each step is guarded so a dead socket / Deepgram timeout can't crash us.
+        try:
+            await dg.finish()
+        except Exception as e:
+            print(f"[ws] dg.finish failed: {e}")
         full = " ".join(accumulated).strip()
-        if full:
-            nodes = classify_transcript(full)
-            session = Session(
-                id=sid,
-                created_at=datetime.datetime.utcnow().isoformat(),
-                transcript=full,
-                nodes=nodes,
-            )
-            SESSIONS[sid] = session
-            try:
-                from app.memory import save_session, ensure_index
-                ensure_index()
-                save_session(session)
-            except Exception:
-                pass  # Redis optional until M2
+        try:
+            if full:
+                result = extract_thought(full, existing_topics=[])
+                await ws.send_json({"type": "extraction", "data": result})
+            await ws.close()
+        except Exception as e:
+            print(f"[ws] finalize failed: {e}")
 
 
 @app.post("/extract-thought")

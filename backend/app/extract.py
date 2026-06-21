@@ -52,6 +52,8 @@ Schema:
 Rules:
 - title is a short (3-6 word) human-friendly headline for THIS whole entry.
 - topics are the main ideas / areas of life mentioned. Names are short and lowercase.
+- CRITICAL: Do NOT over-split. If someone says "I have a CS midterm and I'm stressed about it", that is ONE topic (e.g. "school" or "midterm stress"), not two or three. One coherent worry, situation, or area of life = one topic. Err heavily toward fewer, broader topics.
+- Maximum 4 topics per entry unless the person explicitly mentions 4+ clearly separate areas of life. Most entries should produce 2-3 topics.
 - weight is 1-5: how central/important this topic is in THIS entry.
 - Reuse these EXISTING topics when they fit (status 'existing'); otherwise 'new': {existing}.
 - 'connects' lists other topic names from this same response that are related.

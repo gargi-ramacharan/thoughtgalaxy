@@ -23,7 +23,8 @@ async def make_live_connection(on_transcript, on_utterance_end):
         "smart_format": True,
         "model": "nova-2",
         "interim_results": True,
-        "endpointing": 300,
+        "endpointing": 500,        # give more pause before speech_final
+        "utterance_end_ms": 1500,  # ms of silence before utterance_end fires
         "punctuate": True,
         "filler_words": False,
         "encoding": "linear16",
