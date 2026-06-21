@@ -53,7 +53,7 @@ def _format_map(session: dict, tapped_name: str) -> str:
 
 
 def suggest_for_node(node_id: str, session_id: str, fallback=None,
-                     aliases: list[str] | None = None) -> Suggestion:
+                     aliases=None) -> Suggestion:
     """node_id is a topic name (e.g. 'calc'). Session is extraction-dict shape.
     aliases is the rename chain for this bubble (current name may differ from saved name).
     """

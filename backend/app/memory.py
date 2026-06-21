@@ -68,7 +68,7 @@ def ensure_index() -> None:
     _get_index().create(overwrite=False)
 
 
-def save_session(session_id_or_session, data: dict | None = None) -> None:
+def save_session(session_id_or_session, data=None) -> None:
     """Store session blob + index one embedding per topic.
 
     New call style (M2):  save_session(session_id: str, data: dict)

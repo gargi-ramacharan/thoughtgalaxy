@@ -49,7 +49,7 @@ SESSIONS: dict[str, Session] = {}
 SESSIONS_EXTRACT: dict[str, dict] = {}
 
 
-def _merge_session(existing: dict | None, new: dict) -> dict:
+def _merge_session(existing, new):
     """Accumulate committed thoughts into one session blob so /suggest can
     find any bubble on the map, not just the latest thought's topics."""
     if not existing:
