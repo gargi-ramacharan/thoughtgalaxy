@@ -6,3 +6,6 @@ __pycache__/
 node_modules/
 dist/
 frontend/node_modules/
+node_modules/
+backend/google_credentials.json
+backend/token_calendar.json
