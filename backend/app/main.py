@@ -18,6 +18,8 @@ import datetime
 import asyncio
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
+from dotenv import load_dotenv
+load_dotenv()
 
 import app.observability  # noqa: F401  — initializes Sentry/Arize on import
 from app.classify import classify_transcript
