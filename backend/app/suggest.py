@@ -34,33 +34,51 @@ gently ("this is the third week the same friend group has come up").
 - If past context genuinely helps, lean on it; if not, work from the current map."""
 
 
-def _format_map(session: dict, tapped_id: str) -> str:
+def _format_map(session: dict, tapped_name: str) -> str:
+    """Format the current session's topics as the 'map' context for Claude.
+    session is an extraction dict: {title, summary, topics[], concerns[], ...}
+    """
     lines = []
-    for n in session["nodes"]:
-        mark = "→ TAPPED: " if n["id"] == tapped_id else "  "
-        lines.append(f"{mark}[{n['type']}] {n['text']} — {n['detail']}")
-    return "\n".join(lines)
+    for tp in session.get("topics", []):
+        mark = "→ TAPPED: " if tp.get("name") == tapped_name else "  "
+        contrib = tp.get("contribution", "")
+        excerpts = tp.get("excerpts", [])
+        line = f"{mark}[{tp.get('kind', 'topic')}] {tp['name']}"
+        if contrib:
+            line += f" — {contrib}"
+        if excerpts:
+            line += f" (e.g. \"{excerpts[0]}\")"
+        lines.append(line)
+    return "\n".join(lines) or "(no topics on map)"
 
 
 def suggest_for_node(node_id: str, session_id: str, fallback=None) -> Suggestion:
+    """node_id is a topic name (e.g. 'calc'). Session is extraction-dict shape."""
     session = get_session(session_id)
     if not session and fallback is not None:
         session = fallback if isinstance(fallback, dict) else fallback.model_dump()
     if not session:
         return Suggestion(node_id=node_id, text="I couldn't find that session.")
 
-    tapped = next((n for n in session["nodes"] if n["id"] == node_id), None)
+    # node_id is the topic name; find it in the topics list
+    topics = session.get("topics", [])
+    tapped = next((tp for tp in topics if tp.get("name") == node_id), None)
     if not tapped:
         return Suggestion(node_id=node_id, text="I couldn't find that thought.")
 
-    # Pull related past moments using the tapped thought as the query
-    past = search_past(
-        f"{tapped['text']}. {tapped['detail']}",
-        k=4,
-        exclude_session=session_id,
-    )
+    # Build a rich search query from the topic's contribution + verbatim excerpts
+    query_parts = [tapped["name"]]
+    if tapped.get("contribution"):
+        query_parts.append(tapped["contribution"])
+    query_parts.extend(tapped.get("excerpts", [])[:2])
+    query = ". ".join(query_parts)
+
+    past = search_past(query, k=4, exclude_session=session_id)
     past_block = (
-        "\n".join(f"- ({p['type']}) {p['text']}: {p['detail']}" for p in past)
+        "\n".join(
+            f"- [{p['kind']}] {p['name']}: {p['contribution']}"
+            for p in past
+        )
         if past else "(no closely related past sessions)"
     )
 
@@ -70,7 +88,7 @@ def suggest_for_node(node_id: str, session_id: str, fallback=None) -> Suggestion
 RELATED PAST MOMENTS:
 {past_block}
 
-Give one grounded next step for the tapped bubble."""
+Give one grounded next step for the tapped bubble: "{node_id}"."""
 
     msg = client.messages.create(
         model=MODEL, max_tokens=400, system=SYSTEM,
@@ -79,5 +97,5 @@ Give one grounded next step for the tapped bubble."""
     return Suggestion(
         node_id=node_id,
         text=msg.content[0].text.strip(),
-        drawn_from=[p["text"] for p in past],
+        drawn_from=[p["name"] for p in past],
     )

@@ -47,6 +47,8 @@ app.add_middleware(
 
 # In-memory session cache. Redis (memory.py) is the durable store once M2 lands.
 SESSIONS: dict[str, Session] = {}
+# M2: extraction-shape sessions keyed by session_id (set by /save-session).
+SESSIONS_EXTRACT: dict[str, dict] = {}
 
 
 @app.get("/health")
@@ -204,6 +206,26 @@ def summarize_category(payload: dict):
         return {"summary": local_summary(), "source": "local", "error": str(exc)}
 
 
+@app.post("/save-session")
+def save_session_route(payload: dict):
+    """Explicit commit: frontend sends {session_id, data} after the user hits 'Got it'.
+    data is the extraction output {title, summary, topics[], concerns[], actionItems[], events[]}.
+    Does NOT auto-save from /extract-thought — saving is user-initiated.
+    """
+    session_id = (payload.get("session_id") or "").strip()
+    data = payload.get("data")
+    if not session_id or not isinstance(data, dict):
+        return {"ok": False, "error": "session_id (str) and data (dict) are required"}
+    SESSIONS_EXTRACT[session_id] = data
+    try:
+        from app.memory import save_session, ensure_index
+        ensure_index()
+        save_session(session_id, data)
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+    return {"ok": True, "session_id": session_id, "topics_indexed": len(data.get("topics", []))}
+
+
 @app.post("/classify")
 def classify(payload: dict):
     """Non-streaming fallback: POST {transcript} → a saved session."""
@@ -229,10 +251,16 @@ def classify(payload: dict):
 # ─────────────────────────── Milestone 2 ───────────────────────────
 @app.post("/suggest")
 def suggest(req: SuggestRequest):
-    """Tap a bubble → one grounded next step (pulls past context)."""
+    """Tap a bubble → one grounded next step (pulls past context).
+    req.node_id is a topic name (e.g. 'calc'). Prefers M2 extraction-shape session.
+    """
     from app.suggest import suggest_for_node
-    mem = SESSIONS.get(req.session_id)
-    fallback = mem.model_dump() if mem else None
+    # Prefer extraction-shape session (M2 flow via /save-session)
+    fallback = SESSIONS_EXTRACT.get(req.session_id)
+    # Fall back to old classify-flow session (M1 shape) if not found
+    if fallback is None:
+        mem = SESSIONS.get(req.session_id)
+        fallback = mem.model_dump() if mem else None
     return suggest_for_node(req.node_id, req.session_id, fallback=fallback).model_dump()
 
 
