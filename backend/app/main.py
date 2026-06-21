@@ -91,7 +91,11 @@ async def ws_transcribe(ws: WebSocket):
     try:
         while True:
             audio = await ws.receive_bytes()
-            dg.send(audio)
+            try:
+                dg.send(audio)
+            except Exception as e:
+                print(f"[ws] dg.send failed: {e}")
+                break
     except WebSocketDisconnect:
         pass
     finally:
@@ -156,7 +160,9 @@ def classify(payload: dict):
 def suggest(req: SuggestRequest):
     """Tap a bubble → one grounded next step (pulls past context)."""
     from app.suggest import suggest_for_node
-    return suggest_for_node(req.node_id, req.session_id).model_dump()
+    mem = SESSIONS.get(req.session_id)
+    fallback = mem.model_dump() if mem else None
+    return suggest_for_node(req.node_id, req.session_id, fallback=fallback).model_dump()
 
 
 @app.get("/search")
