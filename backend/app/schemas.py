@@ -38,6 +38,8 @@ class SuggestRequest(BaseModel):
     """Milestone 2 — user taps a bubble and asks for guidance."""
     node_id: str
     session_id: str
+    aliases: list[str] = Field(default_factory=list,
+        description="prior names for this bubble (rename chain), used to match the saved topic name")
 
 
 class Suggestion(BaseModel):

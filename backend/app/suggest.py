@@ -52,17 +52,26 @@ def _format_map(session: dict, tapped_name: str) -> str:
     return "\n".join(lines) or "(no topics on map)"
 
 
-def suggest_for_node(node_id: str, session_id: str, fallback=None) -> Suggestion:
-    """node_id is a topic name (e.g. 'calc'). Session is extraction-dict shape."""
+def suggest_for_node(node_id: str, session_id: str, fallback=None,
+                     aliases: list[str] | None = None) -> Suggestion:
+    """node_id is a topic name (e.g. 'calc'). Session is extraction-dict shape.
+    aliases is the rename chain for this bubble (current name may differ from saved name).
+    """
     session = get_session(session_id)
     if not session and fallback is not None:
         session = fallback if isinstance(fallback, dict) else fallback.model_dump()
     if not session:
         return Suggestion(node_id=node_id, text="I couldn't find that session.")
 
-    # node_id is the topic name; find it in the topics list
+    # node_id is the topic name; find it in the topics list.
+    # Fall through to aliases if the current name was set after the session was saved.
     topics = session.get("topics", [])
-    tapped = next((tp for tp in topics if tp.get("name") == node_id), None)
+    candidates = [node_id] + (aliases or [])
+    tapped = None
+    for candidate in candidates:
+        tapped = next((tp for tp in topics if tp.get("name") == candidate), None)
+        if tapped:
+            break
     if not tapped:
         return Suggestion(node_id=node_id, text="I couldn't find that thought.")
 

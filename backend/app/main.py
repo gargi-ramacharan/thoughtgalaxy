@@ -270,7 +270,7 @@ def suggest(req: SuggestRequest):
     if fallback is None:
         mem = SESSIONS.get(req.session_id)
         fallback = mem.model_dump() if mem else None
-    return suggest_for_node(req.node_id, req.session_id, fallback=fallback).model_dump()
+    return suggest_for_node(req.node_id, req.session_id, fallback=fallback, aliases=req.aliases).model_dump()
 
 
 @app.get("/search")
