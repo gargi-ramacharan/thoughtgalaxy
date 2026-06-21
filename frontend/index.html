@@ -79,6 +79,9 @@
   .tcard p{margin:0;font-size:12px;color:#9a9aa6;line-height:1.55;}
   .blankhint{margin-top:22px;font-style:italic;color:#b0b0ba;font-size:13px;}
   .blankhint b{color:#888;font-weight:500;}
+  #calstatus{display:none;position:absolute;top:12px;right:58px;z-index:3;}
+  .gcal-toast{position:fixed;bottom:80px;left:50%;transform:translateX(-50%);z-index:20;background:#2a2a33;color:#fff;padding:9px 18px;border-radius:999px;font-size:13px;font-family:var(--font-serif);font-style:italic;opacity:0;transition:opacity .35s ease;pointer-events:none;white-space:nowrap;}
+  .gcal-toast.show{opacity:1;}
 </style>
 </head>
 <body>
@@ -87,6 +90,8 @@
 
   <button id="editbtn" class="pill" style="display:none;position:absolute;top:12px;left:12px;z-index:3;align-items:center;gap:7px;height:34px;padding:0 13px;background:rgba(0,0,0,.06);color:#444;font-size:13px;"><i class="ti ti-pencil" style="font-style:normal;"></i> edit</button>
   <button id="themebtn" class="pill" style="display:none;position:absolute;top:12px;right:12px;z-index:3;width:34px;height:34px;background:rgba(0,0,0,.06);color:#444;align-items:center;justify-content:center;font-size:16px;border-radius:50%;"><i class="ti ti-moon"></i></button>
+  <button id="calstatus" class="pill" style="display:none;position:absolute;top:12px;right:58px;z-index:3;height:34px;padding:0 13px;background:rgba(0,0,0,.06);color:#444;font-size:13px;align-items:center;gap:6px;"></button>
+  <div id="gcal-toast" class="gcal-toast"></div>
 
   <div id="hint" style="display:none;position:absolute;left:50%;bottom:14px;transform:translateX(-50%);z-index:3;align-items:center;gap:7px;background:rgba(0,0,0,.05);color:#555;font-size:12.5px;font-style:italic;padding:5px 13px;border-radius:999px;pointer-events:none;transition:opacity .3s;"><i class="ti ti-pointer" style="font-style:normal;"></i> drift through it · tap a cluster to dive in</div>
 
@@ -387,7 +392,7 @@
 
   var ov=document.getElementById('ov'),ovArrows=document.getElementById('ovArrows'),ovTitle=document.getElementById('ovTitle'),ovNotes=document.getElementById('ovNotes'),hint=document.getElementById('hint'),zoomBtn=document.getElementById('ovZoom'),hubchip=document.getElementById('hubchip');
   var current=null;
-  function appCtl(disp){['addbtn','calbtn','logbtn','actbtn','themebtn','editbtn'].forEach(function(id){document.getElementById(id).style.display=disp;});hint.style.display=disp==='none'?'none':'flex';}
+  function appCtl(disp){['addbtn','calbtn','logbtn','actbtn','themebtn','editbtn','calstatus'].forEach(function(id){document.getElementById(id).style.display=disp;});hint.style.display=disp==='none'?'none':'flex';}
   function showOv(){ov.style.display='block';requestAnimationFrame(function(){ov.style.opacity='1';});hint.style.opacity='0';appCtl('none');document.getElementById('composer').style.display='none';}
   function galaxyClick(n){if(isHub[n.k]&&INNER[n.k]){enterHub(n.k);}else if(isHub[n.k]||n.custom){showTopic(n.k,n.c);}else{var hk=(n.links&&n.links[0])||hubs[0]&&hubs[0].k;if(hk){enterHub(hk);setTimeout(function(){openNotes(n.k,activeColor);},120);}else showTopic(n.k,n.c);}}
   function enterHub(key){view='hub';current=key;activeColor=M[key].c;buildHub(key);showOv();}
@@ -482,6 +487,42 @@
 
   var comp=document.getElementById('composer'),cstate=document.getElementById('cstate');
   var API_BASE=(function(){try{var p=new URLSearchParams(location.search).get('api');if(p)return p.replace(/\/$/,'');}catch(e){}return'http://localhost:8000';})();
+
+  /* ── Google Calendar integration ── */
+  var calConnected=false;
+  function gcalToast(msg){var t=document.getElementById('gcal-toast');t.textContent=msg;t.classList.add('show');setTimeout(function(){t.classList.remove('show');},3200);}
+  function updateCalBtn(){
+    var btn=document.getElementById('calstatus');
+    if(!btn)return;
+    btn.style.display='flex';
+    if(calConnected){
+      btn.innerHTML='<i class="ti ti-calendar-check" style="font-style:normal;color:#3bb495"></i> calendar on';
+      btn.style.background='rgba(59,180,149,.1)';btn.style.color='#2a9d6e';
+      btn.onclick=null;
+    }else{
+      btn.innerHTML='<i class="ti ti-calendar-plus" style="font-style:normal"></i> connect calendar';
+      btn.style.background='rgba(0,0,0,.06)';btn.style.color='#444';
+      btn.onclick=function(){window.location.href=API_BASE+'/calendar/auth';};
+    }
+  }
+  function checkCalendarStatus(){
+    fetch(API_BASE+'/calendar/status').then(function(r){return r.json();}).then(function(d){calConnected=!!d.connected;updateCalBtn();}).catch(function(){updateCalBtn();});
+  }
+  function addEventsToCalendar(events,originalText){
+    if(!calConnected||!events||!events.length)return;
+    events.forEach(function(ev){
+      if(!ev.datetime&&!ev.date)return;
+      fetch(API_BASE+'/calendar/add-event',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({title:ev.title,datetime:ev.datetime||null,duration_min:ev.duration_min||60,description:originalText})})
+        .then(function(r){return r.json();})
+        .then(function(res){if(res.ok)gcalToast('✓ Added to Google Calendar: '+ev.title);})
+        .catch(function(){});
+    });
+  }
+  // detect redirect back from Google OAuth
+  (function(){
+    var p=new URLSearchParams(location.search).get('calendar');
+    if(p==='connected'){calConnected=true;history.replaceState({},'',location.pathname);setTimeout(function(){gcalToast('✓ Google Calendar connected!');updateCalBtn();},400);}
+  })();
   document.getElementById('addbtn').onclick=function(){comp.style.display=comp.style.display==='none'?'block':'none';if(comp.style.display==='block')document.getElementById('noteinput').focus();};
   document.getElementById('addnote').onclick=submit;
   function submit(){var inp=document.getElementById('noteinput');var txt=(inp.value||'').trim();if(!txt)return;categorize(txt);}
@@ -544,7 +585,7 @@
       d.fallback_reason='backend not reachable at '+API_BASE+' — start it with: uvicorn app.main:app --reload';
     }
     try{
-      applyExtraction(d,text);showResult(d);
+      applyExtraction(d,text);showResult(d);addEventsToCalendar(d.events||[],text);
       document.getElementById('noteinput').value='';comp.style.display='none';
       var detail=modelDetail(d);
       cstate.textContent=d.source==='local'&&detail?'offline — '+detail:(detail?'classified with '+detail:'');
@@ -570,7 +611,7 @@
 
   /* ---------------- intro flow ---------------- */
   var intro=document.getElementById('intro');
-  function finishEnter(){if(enterDone)return;enterDone=true;appCtl('');hint.style.transition='opacity .45s ease';hint.style.opacity='1';['addbtn','calbtn','logbtn','actbtn','themebtn','editbtn'].forEach(function(id){var el=document.getElementById(id);el.style.transition='opacity .45s ease';el.style.opacity='1';});}
+  function finishEnter(){if(enterDone)return;enterDone=true;appCtl('');hint.style.transition='opacity .45s ease';hint.style.opacity='1';['addbtn','calbtn','logbtn','actbtn','themebtn','editbtn','calstatus'].forEach(function(id){var el=document.getElementById(id);el.style.transition='opacity .45s ease';el.style.opacity='1';});checkCalendarStatus();}
   function startTemplate(name){
     if(entering||screen==='app')return;
     enterDone=false;
