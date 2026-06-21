@@ -47,6 +47,8 @@ app.add_middleware(
 
 # In-memory session cache. Redis (memory.py) is the durable store once M2 lands.
 SESSIONS: dict[str, Session] = {}
+# M2: extraction-shape sessions keyed by session_id (set by /save-session).
+SESSIONS_EXTRACT: dict[str, dict] = {}
 
 
 @app.get("/health")
@@ -153,6 +155,79 @@ def extract(payload: dict):
     return extract_thought(text, existing)
 
 
+@app.post("/summarize-category")
+def summarize_category(payload: dict):
+    """Summarize everything filed under one category into 2-3 sentences.
+
+    Called by the mind-map UI each time a new thought lands in a category, so
+    the category view can show an up-to-date overview above its thoughts.
+    """
+    category = (payload.get("category") or "").strip()
+    thoughts = [t for t in (payload.get("thoughts") or []) if (t or "").strip()]
+    concerns = payload.get("concerns") or []
+    actions = payload.get("actions") or []
+    events = payload.get("events") or []
+    if not thoughts:
+        return {"summary": ""}
+
+    from app.llm import claude_configured, chat_claude
+
+    def local_summary() -> str:
+        n = len(thoughts)
+        parts = [f"{n} thought{'s' if n != 1 else ''} gathered here on {category}."]
+        if concerns:
+            parts.append("Recurring concerns: " + "; ".join(concerns[:3]) + ".")
+        if actions:
+            tail = f" and {len(events)} upcoming event{'s' if len(events) != 1 else ''}" if events else ""
+            parts.append(f"{len(actions)} open action item{'s' if len(actions) != 1 else ''}{tail}.")
+        elif events:
+            parts.append(f"{len(events)} upcoming event{'s' if len(events) != 1 else ''}.")
+        return " ".join(parts[:3])
+
+    if not claude_configured():
+        return {"summary": local_summary(), "source": "local"}
+
+    system = (
+        "You write a short overview of one category in a journaling mind-map. "
+        "Given the category name and the thoughts filed under it, write 2-3 sentences "
+        "(fewer if there is little content) describing the themes, mood, and what's going on. "
+        "Write in a warm, plain second/third-person voice. Return ONLY the sentences, no preamble, no markdown."
+    )
+    lines = [f"Category: {category}", "", "Thoughts:"]
+    lines += [f"- {t}" for t in thoughts]
+    if concerns:
+        lines += ["", "Concerns: " + "; ".join(concerns)]
+    if actions:
+        lines += ["", "Action items: " + "; ".join(actions)]
+    if events:
+        lines += ["", "Events: " + "; ".join(events)]
+    try:
+        text = chat_claude(system, "\n".join(lines), max_tokens=200).strip()
+        return {"summary": text or local_summary(), "source": "claude"}
+    except Exception as exc:
+        return {"summary": local_summary(), "source": "local", "error": str(exc)}
+
+
+@app.post("/save-session")
+def save_session_route(payload: dict):
+    """Explicit commit: frontend sends {session_id, data} after the user hits 'Got it'.
+    data is the extraction output {title, summary, topics[], concerns[], actionItems[], events[]}.
+    Does NOT auto-save from /extract-thought — saving is user-initiated.
+    """
+    session_id = (payload.get("session_id") or "").strip()
+    data = payload.get("data")
+    if not session_id or not isinstance(data, dict):
+        return {"ok": False, "error": "session_id (str) and data (dict) are required"}
+    SESSIONS_EXTRACT[session_id] = data
+    try:
+        from app.memory import save_session, ensure_index
+        ensure_index()
+        save_session(session_id, data)
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+    return {"ok": True, "session_id": session_id, "topics_indexed": len(data.get("topics", []))}
+
+
 @app.post("/classify")
 def classify(payload: dict):
     """Non-streaming fallback: POST {transcript} → a saved session."""
@@ -178,10 +253,16 @@ def classify(payload: dict):
 # ─────────────────────────── Milestone 2 ───────────────────────────
 @app.post("/suggest")
 def suggest(req: SuggestRequest):
-    """Tap a bubble → one grounded next step (pulls past context)."""
+    """Tap a bubble → one grounded next step (pulls past context).
+    req.node_id is a topic name (e.g. 'calc'). Prefers M2 extraction-shape session.
+    """
     from app.suggest import suggest_for_node
-    mem = SESSIONS.get(req.session_id)
-    fallback = mem.model_dump() if mem else None
+    # Prefer extraction-shape session (M2 flow via /save-session)
+    fallback = SESSIONS_EXTRACT.get(req.session_id)
+    # Fall back to old classify-flow session (M1 shape) if not found
+    if fallback is None:
+        mem = SESSIONS.get(req.session_id)
+        fallback = mem.model_dump() if mem else None
     return suggest_for_node(req.node_id, req.session_id, fallback=fallback).model_dump()
 
 
