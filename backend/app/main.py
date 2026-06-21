@@ -23,6 +23,8 @@ load_dotenv()
 
 import app.observability  # noqa: F401  — initializes Sentry/Arize on import
 from app.classify import classify_transcript
+from app.extract import extract_thought
+from app.llm import list_extractors
 from app.schemas import Session, SuggestRequest, ExecuteRequest
 
 app = FastAPI(title="Thought Galaxy")
@@ -39,7 +41,11 @@ SESSIONS: dict[str, Session] = {}
 
 @app.get("/health")
 def health():
-    return {"ok": True}
+    return {
+        "ok": True,
+        "extractors": list_extractors(),
+        "claude_configured": bool(os.environ.get("ANTHROPIC_API_KEY", "").strip()),
+    }
 
 
 # ─────────────────────────── Milestone 1 ───────────────────────────
@@ -103,6 +109,20 @@ async def ws_transcribe(ws: WebSocket):
                 save_session(session)
             except Exception:
                 pass  # Redis optional until M2
+
+
+@app.post("/extract-thought")
+def extract(payload: dict):
+    """Mind-map note → topics/events/actions.
+
+    Uses Claude when ANTHROPIC_API_KEY is set; falls back to a local
+    rule-based parser when credits are exhausted or the key is missing.
+    """
+    text = (payload.get("text") or payload.get("transcript") or "").strip()
+    if not text:
+        return {"error": "text is required"}
+    existing = payload.get("existing_topics") or []
+    return extract_thought(text, existing)
 
 
 @app.post("/classify")

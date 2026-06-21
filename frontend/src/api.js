@@ -9,6 +9,16 @@ export async function classifyText(transcript) {
   return r.json();
 }
 
+/** Mind-map note extraction — Claude when available, local rules otherwise */
+export async function extractThought(text, existingTopics = []) {
+  const r = await fetch(`${BASE}/extract-thought`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ text, existing_topics: existingTopics }),
+  });
+  return r.json();
+}
+
 // Milestone 2 — ask a bubble for guidance
 export async function suggest(nodeId, sessionId) {
   const r = await fetch(`${BASE}/suggest`, {

@@ -1,18 +1,16 @@
-"""Milestone 1 — Claude turns a raw transcript into bubble nodes.
+"""Milestone 1 — transcript → bubble nodes.
 
-This is the brain of the map. A messy 2-minute ramble goes in; a clean,
-connected set of typed nodes comes out. The whole quality of the demo
-lives in this prompt, so it's worth tuning carefully.
+Primary: Claude (when ANTHROPIC_API_KEY is set).
+Fallback: rule-based sentence splitter when Claude fails.
 """
-import json
-import os
-import uuid
-from anthropic import Anthropic
-from .schemas import Node, NodeType
-from .observability import log_classification
+from __future__ import annotations
 
-client = Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
-MODEL = os.environ.get("CLAUDE_MODEL", "claude-sonnet-4-6")
+import re
+import uuid
+
+from .llm import chat_json
+from .observability import log_classification
+from .schemas import Node, NodeType
 
 SYSTEM = """You map a person's spoken stream-of-consciousness into a small \
 constellation of distinct thoughts.
@@ -47,41 +45,102 @@ Return ONLY valid JSON, no markdown, no preamble:
 }
 Use the "ref" field for connections (connects_to references other refs)."""
 
+TASK_HINTS = (
+    "need to", "have to", "must", "should", "submit", "email", "call",
+    "finish", "complete", "pack", "study", "deadline", "due", "meeting",
+)
+EMOTION_HINTS = (
+    "stressed", "stress", "worried", "worry", "anxious", "anxiety",
+    "overwhelmed", "tired", "exhausted", "nervous", "scared", "upset",
+    "frustrated", "sad", "lonely", "angry",
+)
 
-def classify_transcript(transcript: str) -> list[Node]:
-    """Transcript → list of Node. Logs the decision to Arize."""
-    msg = client.messages.create(
-        model=MODEL,
-        max_tokens=1500,
-        system=SYSTEM,
-        messages=[{"role": "user", "content": transcript}],
-    )
-    raw = msg.content[0].text.strip()
-    # Claude is told no markdown, but strip fences defensively
-    if raw.startswith("```"):
-        raw = raw.split("```")[1].replace("json", "", 1).strip()
 
-    data = json.loads(raw)
-
-    # Map model refs → real uuids so connections survive
+def _nodes_from_data(data: dict) -> list[Node]:
     ref_to_id: dict[str, str] = {}
     for n in data["nodes"]:
         ref_to_id[n["ref"]] = str(uuid.uuid4())
 
     nodes: list[Node] = []
     for n in data["nodes"]:
+        ntype = n["type"]
+        if ntype not in ("task", "emotion", "idea"):
+            ntype = "idea"
         nodes.append(
             Node(
                 id=ref_to_id[n["ref"]],
                 text=n["text"],
-                type=NodeType(n["type"]),
+                type=NodeType(ntype),
                 detail=n.get("detail", ""),
-                priority=n.get("priority", 0),
+                priority=min(3, max(0, int(n.get("priority", 0)))),
                 connections=[
                     ref_to_id[r] for r in n.get("connects_to", []) if r in ref_to_id
                 ],
             )
         )
+    return nodes
+
+
+def classify_local(transcript: str) -> list[Node]:
+    """Rule-based fallback — split into sentences and guess node types."""
+    sentences = [
+        s.strip()
+        for s in re.split(r"[.!?;\n]+", transcript)
+        if len(s.strip()) > 12
+    ]
+    if not sentences:
+        text = transcript.strip()
+        sentences = [text] if text else ["(empty transcript)"]
+
+    chunks = sentences[:7]
+    ref_to_id = {f"n{i + 1}": str(uuid.uuid4()) for i in range(len(chunks))}
+    nodes: list[Node] = []
+
+    for i, chunk in enumerate(chunks):
+        lower = chunk.lower()
+        if any(h in lower for h in TASK_HINTS):
+            ntype = NodeType.TASK
+            priority = 2 if "deadline" in lower or "due" in lower else 1
+        elif any(h in lower for h in EMOTION_HINTS):
+            ntype = NodeType.EMOTION
+            priority = 1
+        else:
+            ntype = NodeType.IDEA
+            priority = 0
+
+        words = chunk.split()
+        label = " ".join(words[:8])
+        if len(words) > 8:
+            label += "…"
+
+        ref = f"n{i + 1}"
+        connects: list[str] = []
+        if i > 0:
+            connects.append(ref_to_id[f"n{i}"])
+        if i + 1 < len(chunks):
+            connects.append(ref_to_id[f"n{i + 2}"])
+
+        nodes.append(
+            Node(
+                id=ref_to_id[ref],
+                text=label,
+                type=ntype,
+                detail=chunk,
+                priority=priority,
+                connections=[c for c in connects if c != ref_to_id[ref]],
+            )
+        )
+
+    return nodes
+
+
+def classify_transcript(transcript: str) -> list[Node]:
+    """Transcript → list of Node. Claude → local rules."""
+    try:
+        data, _source, _model = chat_json(SYSTEM, transcript, max_tokens=1500)
+        nodes = _nodes_from_data(data)
+    except Exception:
+        nodes = classify_local(transcript)
 
     log_classification(transcript=transcript, nodes=nodes)
     return nodes
