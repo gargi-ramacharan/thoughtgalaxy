@@ -12,6 +12,8 @@ INSIGHT_AGENT_ADDRESS so the backend can reach it.
 """
 import os
 from uagents import Agent, Context, Model
+from dotenv import load_dotenv
+load_dotenv()
 
 
 # ─── message contract ───
