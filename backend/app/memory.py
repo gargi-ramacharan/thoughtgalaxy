@@ -29,19 +29,17 @@ INDEX_NAME = "node_idx"
 PREFIX = "node:"
 DIM = 1024  # match your embedding model's output dim
 
+from openai import OpenAI
+_openai = OpenAI()  # uses OPENAI_API_KEY from your .env
 
 def _embed(text: str) -> bytes:
-    """Embed text to a vector. Swap this for whatever embedding API you use
-    (Voyage, OpenAI, Cohere). Returns float32 bytes for Redis.
-
-    Placeholder uses a deterministic hash-based vector so the pipeline runs
-    end-to-end offline; replace before relying on real semantic quality.
-    """
-    # TODO: replace with a real embedding call, e.g. Voyage AI:
-    #   vec = voyage.embed([text], model="voyage-3").embeddings[0]
-    rng = np.random.default_rng(abs(hash(text)) % (2**32))
-    vec = rng.standard_normal(DIM).astype(np.float32)
-    vec /= np.linalg.norm(vec)
+    """Real semantic embedding via OpenAI."""
+    resp = _openai.embeddings.create(
+        model="text-embedding-3-small",
+        input=text,
+        dimensions=DIM,  # 1024 — matches the Redis index, no other changes needed
+    )
+    vec = np.array(resp.data[0].embedding, dtype=np.float32)
     return vec.tobytes()
 
 
