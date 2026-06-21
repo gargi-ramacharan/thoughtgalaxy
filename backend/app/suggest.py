@@ -42,8 +42,10 @@ def _format_map(session: dict, tapped_id: str) -> str:
     return "\n".join(lines)
 
 
-def suggest_for_node(node_id: str, session_id: str) -> Suggestion:
+def suggest_for_node(node_id: str, session_id: str, fallback=None) -> Suggestion:
     session = get_session(session_id)
+    if not session and fallback is not None:
+        session = fallback if isinstance(fallback, dict) else fallback.model_dump()
     if not session:
         return Suggestion(node_id=node_id, text="I couldn't find that session.")
 

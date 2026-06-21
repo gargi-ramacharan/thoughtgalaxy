@@ -15,6 +15,12 @@ async def make_live_connection(on_transcript, on_utterance_end):
         "smart_format": True,
         "model": "nova-2",
         "interim_results": True,
+        "endpointing": 300,
+        "punctuate": True,
+        "filler_words": False,
+        "encoding": "linear16",
+        "sample_rate": 16000,
+        "channels": 1,
     })
 
     def handle_transcript(data):
