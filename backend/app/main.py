@@ -29,9 +29,9 @@ GOOGLE_CREDS_PATH = os.environ.get(
 )
 GOOGLE_TOKEN_PATH = os.path.join(BACKEND_DIR, "token_calendar.json")
 CALENDAR_SCOPES = ["https://www.googleapis.com/auth/calendar.events"]
-_cal_state: dict = {}  # holds OAuth state between /auth and /callback
+_cal_state: dict = {}
 
-import app.observability  # noqa: F401  — initializes Sentry/Arize on import
+import app.observability  # noqa: F401
 from app.classify import classify_transcript
 from app.extract import extract_thought
 from app.llm import list_extractors
@@ -45,9 +45,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# In-memory session cache. Redis (memory.py) is the durable store once M2 lands.
 SESSIONS: dict[str, Session] = {}
-# M2: extraction-shape sessions keyed by session_id (set by /save-session).
 SESSIONS_EXTRACT: dict[str, dict] = {}
 
 
@@ -63,24 +61,18 @@ def health():
 # ─────────────────────────── Milestone 1 ───────────────────────────
 @app.websocket("/ws/transcribe")
 async def ws_transcribe(ws: WebSocket):
-    """Live pipeline. Browser streams audio chunks; we stream back:
-       {type:'partial', text}        interim words (the live-typing effect)
-       {type:'partial_final', text}  promote interim → final, after each pause
-       {type:'extraction', data}     topics/concerns/events, once the mic stops
-    """
     await ws.accept()
     from app.deepgram_stream import make_live_connection
 
     loop = asyncio.get_event_loop()
     accumulated: list[str] = []
     sid = str(uuid.uuid4())
+    ws_graph: dict | None = None
+    ws_request_actions = False
 
     def on_transcript(text: str, is_final: bool):
-        # accumulate finalized chunks across the whole session; never reset here
         if is_final:
             accumulated.append(text)
-        # send the FULL running transcript so the live display shows everything,
-        # not just the latest interim word(s)
         live = " ".join(accumulated)
         if not is_final and text:
             live = (live + " " + text).strip()
@@ -89,13 +81,11 @@ async def ws_transcribe(ws: WebSocket):
         )
 
     def on_utterance_end():
-        # speaker paused — tell the frontend the finalized text is settled
         chunk = " ".join(accumulated).strip()
         if not chunk:
             return
         asyncio.run_coroutine_threadsafe(
-            ws.send_json({"type": "partial_final", "text": chunk}),
-            loop,
+            ws.send_json({"type": "partial_final", "text": chunk}), loop
         )
 
     dg = await make_live_connection(on_transcript, on_utterance_end)
@@ -112,10 +102,14 @@ async def ws_transcribe(ws: WebSocket):
                     print(f"[ws] dg.send failed: {e}")
                     break
             elif msg.get("text") is not None:
-                # control frame from the client; {"type":"done"} (or bare "done")
                 text = msg["text"]
                 try:
-                    done = (json.loads(text) or {}).get("type") == "done"
+                    ctrl = json.loads(text) or {}
+                    done = ctrl.get("type") == "done"
+                    if isinstance(ctrl.get("graph"), dict):
+                        ws_graph = ctrl["graph"]
+                    if "request_actions" in ctrl:
+                        ws_request_actions = bool(ctrl["request_actions"])
                 except Exception:
                     done = text == "done"
                 if done:
@@ -123,8 +117,6 @@ async def ws_transcribe(ws: WebSocket):
     except WebSocketDisconnect:
         pass
     finally:
-        # backend owns the close: flush Deepgram, extract, send result, then close.
-        # each step is guarded so a dead socket / Deepgram timeout can't crash us.
         try:
             await dg.finish()
         except Exception as e:
@@ -132,9 +124,10 @@ async def ws_transcribe(ws: WebSocket):
         full = " ".join(accumulated).strip()
         try:
             if full:
-                # run the (blocking) Claude call off the event loop so the live
-                # caption / socket aren't frozen while we wait on the API
-                result = await asyncio.to_thread(extract_thought, full, [])
+                # run blocking Claude call off the event loop to avoid freezing
+                result = await asyncio.to_thread(
+                    extract_thought, full, [], ws_graph, ws_request_actions
+                )
                 await ws.send_json({"type": "extraction", "data": result})
             await ws.close()
         except Exception as e:
@@ -143,25 +136,17 @@ async def ws_transcribe(ws: WebSocket):
 
 @app.post("/extract-thought")
 def extract(payload: dict):
-    """Mind-map note → topics/events/actions.
-
-    Uses Claude when ANTHROPIC_API_KEY is set; falls back to a local
-    rule-based parser when credits are exhausted or the key is missing.
-    """
     text = (payload.get("text") or payload.get("transcript") or "").strip()
     if not text:
         return {"error": "text is required"}
     existing = payload.get("existing_topics") or []
-    return extract_thought(text, existing)
+    graph = payload.get("graph")
+    request_actions = bool(payload.get("request_actions"))
+    return extract_thought(text, existing, graph=graph, request_actions=request_actions)
 
 
 @app.post("/summarize-category")
 def summarize_category(payload: dict):
-    """Summarize everything filed under one category into 2-3 sentences.
-
-    Called by the mind-map UI each time a new thought lands in a category, so
-    the category view can show an up-to-date overview above its thoughts.
-    """
     category = (payload.get("category") or "").strip()
     thoughts = [t for t in (payload.get("thoughts") or []) if (t or "").strip()]
     concerns = payload.get("concerns") or []
@@ -210,10 +195,6 @@ def summarize_category(payload: dict):
 
 @app.post("/save-session")
 def save_session_route(payload: dict):
-    """Explicit commit: frontend sends {session_id, data} after the user hits 'Got it'.
-    data is the extraction output {title, summary, topics[], concerns[], actionItems[], events[]}.
-    Does NOT auto-save from /extract-thought — saving is user-initiated.
-    """
     session_id = (payload.get("session_id") or "").strip()
     data = payload.get("data")
     if not session_id or not isinstance(data, dict):
@@ -230,7 +211,6 @@ def save_session_route(payload: dict):
 
 @app.post("/classify")
 def classify(payload: dict):
-    """Non-streaming fallback: POST {transcript} → a saved session."""
     transcript = payload["transcript"]
     nodes = classify_transcript(transcript)
     sid = str(uuid.uuid4())
@@ -253,13 +233,8 @@ def classify(payload: dict):
 # ─────────────────────────── Milestone 2 ───────────────────────────
 @app.post("/suggest")
 def suggest(req: SuggestRequest):
-    """Tap a bubble → one grounded next step (pulls past context).
-    req.node_id is a topic name (e.g. 'calc'). Prefers M2 extraction-shape session.
-    """
     from app.suggest import suggest_for_node
-    # Prefer extraction-shape session (M2 flow via /save-session)
     fallback = SESSIONS_EXTRACT.get(req.session_id)
-    # Fall back to old classify-flow session (M1 shape) if not found
     if fallback is None:
         mem = SESSIONS.get(req.session_id)
         fallback = mem.model_dump() if mem else None
@@ -268,7 +243,6 @@ def suggest(req: SuggestRequest):
 
 @app.get("/search")
 def search(q: str):
-    """Semantic search over all past thoughts."""
     from app.memory import search_past
     return {"results": search_past(q, k=8)}
 
@@ -276,35 +250,17 @@ def search(q: str):
 # ─────────────────────────── Milestone 3 ───────────────────────────
 @app.post("/execute")
 async def execute(req: ExecuteRequest):
-    """Route a task node to the right Fetch.ai agent and run it.
-
-    In M3 this forwards to the calendar/email uAgents. Here we mark the node
-    running and hand off; the agent pings back completion out of band.
-    """
     session = SESSIONS.get(req.session_id)
     if not session:
         return {"error": "session not found"}
     node = next((n for n in session.nodes if n.id == req.node_id), None)
     if not node:
         return {"error": "node not found"}
-
     node.status = "running"
-    # TODO (M3): publish to Fetch.ai agent via uAgents messaging.
-    # See agents/calendar_agent.py and agents/email_agent.py.
     from app.agent_bridge import dispatch_task
     result = await dispatch_task(node)
     node.status = "done" if result.get("ok") else "failed"
     return {"node_id": node.id, "status": node.status, "result": result}
-
-
-# ─────────────────────────── Extract thought ────────────────────────
-@app.post("/extract-thought")
-def extract_thought_endpoint(payload: dict):
-    """Mindmap UI calls this: text → topics + events + action items (Claude-powered)."""
-    from app.extract import extract_thought
-    text = payload.get("text", "")
-    existing = payload.get("existing_topics", [])
-    return extract_thought(text, existing)
 
 
 # ─────────────────────────── Google Calendar ────────────────────────
@@ -378,7 +334,6 @@ def calendar_add_event(payload: dict):
                 f.write(creds.to_json())
 
         service = build("calendar", "v3", credentials=creds)
-
         title = payload.get("title", "Thought Galaxy Event")
         datetime_iso = payload.get("datetime")
         duration_min = int(payload.get("duration_min", 60))
