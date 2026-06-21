@@ -33,9 +33,24 @@ async def make_live_connection(on_transcript, on_utterance_end):
     })
 
     def handle_transcript(data):
-        if "channel" not in data:
+        # Deepgram emits several message shapes on one stream: Results (transcript),
+        # UtteranceEnd, SpeechStarted, Metadata. With utterance_end_ms set, the
+        # UtteranceEnd message is a dict with no "channel"; other shapes may be
+        # lists. Guard everything — a raised exception kills the receive task.
+        if not isinstance(data, dict):
             return
-        alt = data["channel"]["alternatives"][0]
+        if data.get("type") == "UtteranceEnd":
+            on_utterance_end()
+            return
+        channel = data.get("channel")
+        if not isinstance(channel, dict):
+            return
+        alternatives = channel.get("alternatives")
+        if not alternatives:
+            return
+        alt = alternatives[0]
+        if not isinstance(alt, dict):
+            return
         text = alt.get("transcript", "")
         is_final = data.get("is_final", False)
         if text:
